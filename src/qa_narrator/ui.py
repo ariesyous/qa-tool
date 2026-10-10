@@ -25,10 +25,10 @@ from PySide6.QtWidgets import (
 
 from .capture import CaptureEngine
 from .export import export_markdown, timestamp
-from .shortcut import ShortcutDialog
+from .shortcut import AdditionalShortcutsDialog, ShortcutDialog
 from .storage import Session, list_sessions
 from .transcription import MODELS, download_model, model_root, process_session
-from .windows import capture_target, install_hotkey
+from .windows import MAX_ADDITIONAL_SHORTCUTS, ScreenshotShortcuts, capture_target
 
 
 class Signals(QObject):
@@ -54,11 +54,12 @@ class MainWindow(QMainWindow):
             self.settings.value("output", str(Path.home() / "Documents" / "qa-sessions"))
         )
         self.shortcut = self.settings.value("shortcut", "Ctrl+Alt+F9")
+        self.additional_shortcuts = self.settings.value("additional_shortcuts", [], type=list)
         self._build()
         self._devices()
         self._sessions()
         try:
-            self.hotkey = install_hotkey(QApplication.instance(), self._capture, self.shortcut)
+            self.hotkey = ScreenshotShortcuts(QApplication.instance(), self._capture, self._shortcuts())
         except Exception as exc:
             self._notice("error", str(exc))
         self.timer = QTimer(self)
@@ -99,7 +100,7 @@ class MainWindow(QMainWindow):
             button.clicked.connect(slot)
             row.addWidget(button)
         layout.addLayout(row)
-        self.hint = QLabel(f"Switch to your application and press {self.shortcut} to capture.")
+        self.hint = QLabel()
         self.hint.setWordWrap(True)
         layout.addWidget(self.hint)
         self.message = QLabel("")
@@ -142,8 +143,12 @@ class MainWindow(QMainWindow):
         self.options = QGroupBox("Settings")
         form = QFormLayout(self.options)
         self.shortcut_button = QPushButton(f"{self.shortcut}  ·  Change…")
-        self.shortcut_button.clicked.connect(self._choose_shortcut)
+        self.shortcut_button.clicked.connect(lambda: self._choose_shortcut())
         form.addRow("Screenshot shortcut", self.shortcut_button)
+        self.additional_shortcuts_button = QPushButton()
+        self.additional_shortcuts_button.clicked.connect(self._manage_shortcuts)
+        form.addRow("", self.additional_shortcuts_button)
+        self._refresh_shortcuts()
         row = QHBoxLayout()
         self.output_text = QLineEdit(str(self.root))
         choose = QPushButton("Browse…")
@@ -482,56 +487,96 @@ class MainWindow(QMainWindow):
             except Exception as exc:
                 self._notice("error", str(exc))
 
-    def _choose_shortcut(self):
-        # Release the old registration while listening, so Windows does not consume
-        # that combination before the picker can record it again.
-        previous = self.shortcut
+    def _shortcuts(self):
+        return [self.shortcut, *self.additional_shortcuts]
+
+    def _refresh_shortcuts(self):
+        self.shortcut_button.setText(f"{self.shortcut}  ·  Change…")
+        self.additional_shortcuts_button.setText(
+            f"Additional shortcuts ({len(self.additional_shortcuts)}/{MAX_ADDITIONAL_SHORTCUTS})…"
+        )
+        self.hint.setText(
+            f"Switch to your application and press {' or '.join(self._shortcuts())} to capture."
+        )
+
+    def _save_shortcuts(self, shortcuts):
+        self.shortcut, *self.additional_shortcuts = shortcuts
+        self.settings.setValue("shortcut", self.shortcut)
+        self.settings.setValue("additional_shortcuts", self.additional_shortcuts)
+        self.settings.sync()
+        self._refresh_shortcuts()
+
+    def _manage_shortcuts(self):
+        AdditionalShortcutsDialog(self).exec()
+
+    def _choose_shortcut(self, index=0, picker_parent=None):
+        if index is None and len(self.additional_shortcuts) >= MAX_ADDITIONAL_SHORTCUTS:
+            return f"You can add up to {MAX_ADDITIONAL_SHORTCUTS} additional shortcuts."
+        # Release all registrations so the picker can receive existing combinations.
+        previous = self._shortcuts()
         if self.hotkey:
             self.hotkey.close()
             self.hotkey = None
-        dialog = ShortcutDialog(self)
+        dialog = ShortcutDialog(picker_parent or self)
         chosen = dialog.shortcut if dialog.exec() else None
-        candidate = chosen or previous
+        candidate = previous.copy()
+        if chosen:
+            if index is None:
+                candidate.append(chosen)
+            else:
+                candidate[index] = chosen
+        error = None
         try:
-            self.hotkey = install_hotkey(QApplication.instance(), self._capture, candidate)
+            self.hotkey = ScreenshotShortcuts(QApplication.instance(), self._capture, candidate)
         except Exception as exc:
-            self._notice("error", str(exc))
+            error = str(exc)
             candidate = previous
             try:
-                self.hotkey = install_hotkey(QApplication.instance(), self._capture, previous)
+                self.hotkey = ScreenshotShortcuts(QApplication.instance(), self._capture, previous)
             except Exception as restore_error:
-                self._notice(
-                    "error", f"{exc} Previous shortcut could not be restored: {restore_error}"
-                )
+                error = f"{exc} Previous shortcuts could not be restored: {restore_error}"
         if self.hotkey:
-            self.shortcut = candidate
-            self.settings.setValue("shortcut", candidate)
-            self.settings.sync()
-            self.shortcut_button.setText(f"{candidate}  ·  Change…")
-            self.hint.setText(f"Switch to your application and press {candidate} to capture.")
+            self._save_shortcuts(candidate)
+        if error:
+            self._notice("error", error)
+        self._controls()
+        return error
+
+    def _remove_shortcut(self, index):
+        if not 1 <= index <= len(self.additional_shortcuts):
+            return "Only additional shortcuts can be removed."
+        candidate = self._shortcuts()
+        del candidate[index]
+        try:
+            if self.hotkey:
+                self.hotkey.configure(candidate)
+            else:
+                self.hotkey = ScreenshotShortcuts(QApplication.instance(), self._capture, candidate)
+        except Exception as exc:
+            self._notice("error", str(exc))
+            return str(exc)
+        self._save_shortcuts(candidate)
         self._controls()
 
     def _apply(self):
         try:
-            shortcut = self.shortcut
             root = Path(self.output_text.text()).expanduser().resolve()
             root.mkdir(parents=True, exist_ok=True)
             if self.hotkey is None:
-                self.hotkey = install_hotkey(QApplication.instance(), self._capture, shortcut)
-            elif shortcut.lower() != self.shortcut.lower():
-                self.hotkey.configure(shortcut)
+                self.hotkey = ScreenshotShortcuts(
+                    QApplication.instance(), self._capture, self._shortcuts()
+                )
             changed = root != self.root
-            self.root, self.shortcut = root, shortcut
+            self.root = root
             for key, value in (
                 ("output", str(root)),
-                ("shortcut", shortcut),
                 ("mode", self.mode.currentData()),
                 ("monitor", self.monitors.currentData()),
                 ("model", self.model.currentText()),
             ):
                 self.settings.setValue(key, value)
             self.settings.sync()
-            self.hint.setText(f"Switch to your application and press {shortcut} to capture.")
+            self._refresh_shortcuts()
             if changed:
                 self._sessions()
             self._controls()

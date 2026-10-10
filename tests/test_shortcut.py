@@ -44,6 +44,25 @@ def test_picker_records_key_combination(app):
     assert dialog.shortcut == "Ctrl+Alt+F9"
 
 
+@pytest.mark.parametrize("key,name", [(Qt.Key_QuoteLeft, "`"), (Qt.Key_ScrollLock, "Scroll Lock")])
+@pytest.mark.parametrize("modifiers,prefix", [(Qt.NoModifier, ""), (Qt.ControlModifier, "Ctrl+")])
+def test_picker_records_backtick_and_scroll_lock(app, key, name, modifiers, prefix):
+    dialog = ShortcutDialog()
+    dialog.show()
+    assert dialog.eventFilter(dialog, QKeyEvent(QEvent.KeyPress, key, modifiers))
+    assert dialog.shortcut == prefix + name
+    assert dialog.result() == QDialog.Accepted
+
+
+@pytest.mark.parametrize("key", [Qt.Key_QuoteLeft, Qt.Key_ScrollLock])
+def test_picker_ignores_repeated_standalone_key(app, key):
+    dialog = ShortcutDialog()
+    dialog.show()
+    assert dialog.eventFilter(dialog, QKeyEvent(QEvent.KeyPress, key, Qt.NoModifier, "", True))
+    assert dialog.shortcut is None
+    dialog.close()
+
+
 def test_picker_ignores_primary_click_and_modifier_only_then_cancels(app):
     dialog = ShortcutDialog()
     dialog.show()
@@ -97,14 +116,18 @@ def test_picker_saves_immediately_and_restores_previous_on_cancel_or_failure(
     widget = SimpleNamespace(setText=lambda _: None)
     owner = SimpleNamespace(
         shortcut="Ctrl+Alt+F9",
+        additional_shortcuts=["Ctrl+F8"],
         hotkey=old,
         _capture=lambda: None,
         _controls=lambda: None,
         _notice=lambda *args: errors.append(args),
         shortcut_button=widget,
+        additional_shortcuts_button=widget,
         hint=widget,
         settings=SimpleNamespace(setValue=saved.__setitem__, sync=lambda: None),
     )
+    for name in ("_shortcuts", "_save_shortcuts", "_refresh_shortcuts"):
+        setattr(owner, name, getattr(MainWindow, name).__get__(owner))
     monkeypatch.setattr(
         "qa_narrator.ui.ShortcutDialog",
         lambda _: SimpleNamespace(shortcut=choice, exec=lambda: bool(choice)),
@@ -112,14 +135,15 @@ def test_picker_saves_immediately_and_restores_previous_on_cancel_or_failure(
 
     def install(_app, _callback, binding):
         attempts.append(binding)
-        if fail and binding == choice:
+        if fail and binding[0] == choice:
             raise OSError("Registration failed")
         return SimpleNamespace(close=lambda: None)
 
-    monkeypatch.setattr("qa_narrator.ui.install_hotkey", install)
+    monkeypatch.setattr("qa_narrator.ui.ScreenshotShortcuts", install)
     MainWindow._choose_shortcut(owner)
     expected = choice if choice and not fail else "Ctrl+Alt+F9"
     assert closed and owner.hotkey is not None
     assert owner.shortcut == saved["shortcut"] == expected
-    assert attempts[-1] == expected
+    assert attempts[-1] == [expected, "Ctrl+F8"]
+    assert saved["additional_shortcuts"] == ["Ctrl+F8"]
     assert bool(errors) == fail

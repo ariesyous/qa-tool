@@ -270,6 +270,10 @@ def test_hotkey_validation():
     from qa_narrator.windows import parse_hotkey
 
     assert parse_hotkey("Ctrl+Alt+F9") == (0x4003, 0x78)
+    assert parse_hotkey("`") == (0x4000, 0xC0)
+    assert parse_hotkey("Scroll Lock") == (0x4000, 0x91)
+    assert parse_hotkey("Ctrl+`") == (0x4002, 0xC0)
+    assert parse_hotkey("shift+scroll lock") == (0x4004, 0x91)
     for invalid in ("F9", "Ctrl+F12", "Ctrl+Ctrl+F9", "Shift+A", "Ctrl+Banana"):
         with pytest.raises(ValueError):
             parse_hotkey(invalid)

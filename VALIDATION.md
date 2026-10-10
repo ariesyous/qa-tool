@@ -1,5 +1,59 @@
 # Validation record
 
+## v0.2.0 release
+
+The release build at `dist/v0.2.0/QANarrator/QANarrator.exe` was rebuilt from source
+with package version 0.2.0 on October 10, 2026. All **68 tests** and lint passed.
+The final executable passed `smoke_packaged.py --exe
+dist/v0.2.0/QANarrator/QANarrator.exe --embed-images`, covering offline synthetic
+transcription, Markdown export, embedded PNG roundtrip verification, and GUI
+launch/normal close. The release ZIP includes the complete application folder and
+dependency licenses. SHA256SUMS.txt provides the ZIP checksum.
+
+## Standalone backtick and Scroll Lock update
+
+On October 10, 2026, **68 automated tests passed**
+(`pytest --basetemp=.validation/pytest-standalone-shortcuts`), and lint passed.
+New coverage checks both keys in the picker with and without modifiers, ignored
+autorepeat events, native key codes and no-repeat flags, duplicate detection,
+and settings persistence/reload. Backtick maps to the US-layout backtick/tilde key.
+
+The native `scripts/smoke_shortcuts.py` check passed with standalone backtick and
+Scroll Lock among six active bindings. Registration, posted-message dispatch,
+cleanup, and reload passed. The additional-shortcuts preview was visually checked.
+Physical key presses during recording are not covered by this automated check.
+
+The rebuilt executable is at `dist/standalone-shortcuts/QANarrator/QANarrator.exe`.
+`smoke_packaged.py --exe dist/standalone-shortcuts/QANarrator/QANarrator.exe
+--embed-images` passed offline synthetic transcription, export, embedded PNG
+roundtrip verification, and GUI launch/normal close.
+
+## Multiple screenshot shortcuts update
+
+On October 10, 2026, **61 automated tests passed**
+(`pytest --basetemp=.validation/pytest-multiple-shortcuts`), and lint passed for
+`src`, `tests`, and `scripts/smoke_shortcuts.py`. Coverage includes six keyboard
+bindings, mixed keyboard/mouse bindings, unique native registration IDs, cleanup,
+partial registration failure, duplicate detection regardless of modifier order or
+case, legacy settings, persistence/reload, add/change/remove, the five-extra limit,
+cancel, conflict restoration, and recovery after restoration fails.
+
+`python scripts/smoke_shortcuts.py` passed on the native Windows desktop with
+three keyboard and three mouse shortcuts active together. Each posted keyboard
+message and mouse callback fixture dispatched once. Removal, cleanup, reload, and
+the real Qt settings/dialog UI passed; the one-shortcut and six-shortcut previews
+were visually inspected. The script uses isolated settings and records no audio.
+Physical key/button presses while recording remain a human acceptance check.
+The sandbox denies global keyboard registration (Windows error 5), so the native
+check ran outside it.
+
+The updated executable was rebuilt with
+`scripts/build.ps1 -OutputDirectory dist/multiple-shortcuts` and is available at
+`dist/multiple-shortcuts/QANarrator/QANarrator.exe`. The packaged smoke test passed
+offline synthetic transcription/export, embedded PNG roundtrip verification, and
+GUI launch/normal close using `smoke_packaged.py --exe
+dist/multiple-shortcuts/QANarrator/QANarrator.exe --embed-images`.
+
 ## Portable Markdown update
 
 **49 automated tests pass** (`pytest --basetemp=.validation/pytest-portable`); lint

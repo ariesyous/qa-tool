@@ -6,6 +6,8 @@ import sys
 from ctypes import wintypes
 
 MOUSE_BUTTONS = {"MIDDLE MOUSE": 0x207, "MOUSE BUTTON 4": 1, "MOUSE BUTTON 5": 2}
+MAX_ADDITIONAL_SHORTCUTS = 5
+_hotkey_ids = set()
 
 if sys.platform == "win32":
     user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -138,19 +140,22 @@ def parse_hotkey(text):
     keys = {
         **{f"F{i}": 0x6F + i for i in range(1, 12)},
         **{c: ord(c) for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"},
+        "`": 0xC0,  # VK_OEM_3: backtick on the US keyboard layout.
+        "SCROLL LOCK": 0x91,  # VK_SCROLL
     }
     modifiers = {"CTRL": 2, "ALT": 1, "SHIFT": 4, "WIN": 8}
-    if len(parts) < 2 or parts[-1] not in keys or len(set(parts)) != len(parts):
+    if parts[-1] not in keys or len(set(parts)) != len(parts):
         raise ValueError(
-            "Use modifiers plus F1–F11, A–Z, or 0–9, e.g. Ctrl+Alt+F9. F12 is reserved."
+            "Use Ctrl, Alt, or Win plus F1–F11, A–Z, or 0–9; "
+            "or backtick (`) / Scroll Lock with optional modifiers. F12 is reserved."
         )
     mask = 0x4000  # MOD_NOREPEAT
     for part in parts[:-1]:
         if part not in modifiers:
             raise ValueError(f"Unknown shortcut modifier: {part}")
         mask |= modifiers[part]
-    if not (mask & (1 | 2 | 8)):
-        raise ValueError("Include Ctrl, Alt, or Win in the shortcut")
+    if parts[-1] not in ("`", "SCROLL LOCK") and not (mask & (1 | 2 | 8)):
+        raise ValueError("Include Ctrl, Alt, or Win, or use backtick (`) / Scroll Lock on its own")
     return mask, keys[parts[-1]]
 
 
@@ -178,12 +183,13 @@ def install_hotkey(app, callback, shortcut):
                     self.mouse_hook.close()
                 if self.registered:
                     user32.UnregisterHotKey(None, self.key_id)
+                    _hotkey_ids.discard(self.key_id)
                     self.registered = False
                 self.mouse_hook = new_hook
                 return
             modifiers, key = parse_hotkey(text)
-            # Register a second id first; a conflict never destroys the working shortcut.
-            candidate = 0x5142 if self.key_id == 0x5141 else 0x5141
+            # Every live binding needs its own id, including replacements awaiting commit.
+            candidate = next(i for i in range(0x5141, 0xC000) if i not in _hotkey_ids)
             if not user32.RegisterHotKey(None, candidate, modifiers, key):
                 code = ctypes.get_last_error()
                 reason = (
@@ -192,8 +198,10 @@ def install_hotkey(app, callback, shortcut):
                     else "another application may use it"
                 )
                 raise OSError(f"Cannot register {text}; {reason} (Windows error {code}).")
+            _hotkey_ids.add(candidate)
             if self.registered:
                 user32.UnregisterHotKey(None, self.key_id)
+                _hotkey_ids.discard(self.key_id)
             self.key_id, self.registered = candidate, True
             if self.mouse_hook:
                 self.mouse_hook.close()
@@ -216,6 +224,7 @@ def install_hotkey(app, callback, shortcut):
                 self.mouse_hook = None
             if self.registered:
                 user32.UnregisterHotKey(None, self.key_id)
+                _hotkey_ids.discard(self.key_id)
                 self.registered = False
             app.removeNativeEventFilter(self)
 
@@ -226,6 +235,49 @@ def install_hotkey(app, callback, shortcut):
         hotkey.close()
         raise
     return hotkey
+
+
+def validate_shortcuts(shortcuts):
+    if not 1 <= len(shortcuts) <= MAX_ADDITIONAL_SHORTCUTS + 1:
+        raise ValueError(f"Configure one screenshot shortcut and up to {MAX_ADDITIONAL_SHORTCUTS} more.")
+    bindings = []
+    for text in shortcuts:
+        mouse = parse_mouse_shortcut(text)
+        binding = ("mouse", *mouse) if mouse else ("keyboard", *parse_hotkey(text))
+        if binding in bindings:
+            raise ValueError(f"{text} is already configured as a screenshot shortcut.")
+        bindings.append(binding)
+    return bindings
+
+
+class ScreenshotShortcuts:
+    """Own all screenshot bindings and keep the working set on registration failure."""
+
+    def __init__(self, app, callback, shortcuts):
+        self.app, self.callback = app, callback
+        self.bindings = {}
+        self.configure(shortcuts)
+
+    def configure(self, shortcuts):
+        keys = validate_shortcuts(shortcuts)
+        added = {}
+        try:
+            for key, text in zip(keys, shortcuts):
+                if key not in self.bindings:
+                    added[key] = install_hotkey(self.app, self.callback, text)
+        except Exception:
+            for binding in added.values():
+                binding.close()
+            raise
+        for key, binding in self.bindings.items():
+            if key not in keys:
+                binding.close()
+        self.bindings = {key: self.bindings.get(key) or added[key] for key in keys}
+
+    def close(self):
+        for binding in self.bindings.values():
+            binding.close()
+        self.bindings.clear()
 
 
 def capture_target(mode, monitor_index):

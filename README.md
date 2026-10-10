@@ -8,7 +8,7 @@ voice and transcribes it on your Windows PC, ready for you to share with a teamm
 or coding agent.
 
 **[Download for Windows →](https://github.com/ariesyous/qa-tool/releases/latest)**
-Choose **QANarrator-v0.1.0-windows-x64.zip**, then follow the [quick start](#download-and-launch).
+Choose **QANarrator-v0.2.0-windows-x64.zip**, then follow the [quick start](#download-and-launch).
 Requires Windows 10/11 x64.
 
 [Quick start](#download-and-launch) · [First walkthrough](#your-first-walkthrough) · [Screenshot shortcuts](#screenshot-shortcuts) · [Portable Markdown](#portable-markdown-with-embedded-screenshots) · [Troubleshooting](#troubleshooting) · [Developer setup](#setup-from-source)
@@ -28,7 +28,7 @@ model download needs internet access; transcription runs locally afterward.
 
 ## Download and launch
 
-1. Download **QANarrator-v0.1.0-windows-x64.zip** from the
+1. Download **QANarrator-v0.2.0-windows-x64.zip** from the
    [latest release](https://github.com/ariesyous/qa-tool/releases/latest).
 2. Extract the ZIP, then double-click **`QANarrator\QANarrator.exe`**.
    Keep the entire extracted `QANarrator` folder together, including `_internal`.
@@ -66,6 +66,15 @@ blocked during recording/processing; minimize the window to leave it working.
 to **Ctrl+Alt+F9**. In **Settings → Screenshot shortcut**, record a keyboard
 combination or a **middle / side mouse button** (buttons 4 and 5), optionally with
 Ctrl/Alt/Shift/Win.
+
+**Backtick (\`) and Scroll Lock** can also be used on their own, without modifiers.
+Record either key in the picker to use it as your main shortcut or an additional one.
+Backtick uses the US-layout backtick/tilde key.
+
+Keep just the default shortcut, or open **Additional shortcuts** to add up to five
+more (six total). You can change or remove each additional shortcut. All configured
+shortcuts use the same capture settings. Duplicate combinations are rejected, and
+a registration conflict keeps your previous shortcuts.
 
 The captured shortcut saves immediately. Esc or Cancel keeps your previous shortcut.
 Left and right clicks are not assigned. Mouse shortcuts pass through, so the button
