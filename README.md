@@ -5,6 +5,20 @@ A Windows 10/11 utility for recording spoken QA feedback, capturing screenshots 
 on your computer. No accounts, telemetry, cloud transcription, uploads, LLM analysis,
 or automatic sharing.
 
+## Screenshots
+
+The main window brings recording controls, saved sessions, and capture settings together.
+
+![Local QA Narrator main window with recording controls, sessions, and settings](docs/screenshots/main-window.png)
+
+Enable embedded screenshots to export a single Markdown file containing the PNG images.
+
+![Settings with portable Markdown screenshot embedding enabled](docs/screenshots/export-settings.png)
+
+Choose a keyboard combination or a middle/side mouse button for screenshot capture.
+
+![Screenshot shortcut picker explaining keyboard and mouse shortcuts](docs/screenshots/shortcut-picker.png)
+
 ## Download and launch
 
 Download **QANarrator-v0.1.0-windows-x64.zip** from the
