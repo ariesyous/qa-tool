@@ -1,0 +1,13 @@
+.venv/
+.python/
+.uv-cache/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+qa-sessions/
+models/
+.validation/
+

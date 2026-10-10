@@ -1,0 +1,581 @@
+"""Minimal Qt interface; expensive work runs outside the GUI thread."""
+
+import sys
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+from PySide6.QtCore import QObject, QSettings, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices
+from PySide6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QFileDialog,
+    QFormLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+from .capture import CaptureEngine
+from .export import export_markdown, timestamp
+from .shortcut import ShortcutDialog
+from .storage import Session, list_sessions
+from .transcription import MODELS, download_model, model_root, process_session
+from .windows import capture_target, install_hotkey
+
+
+class Signals(QObject):
+    finished = Signal(object, object, object)
+    notice = Signal(str, str)
+    progress = Signal(str)
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Local QA Narrator")
+        self.resize(650, 680)
+        self.settings = QSettings("LocalQANarrator", "QANarrator")
+        self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="processing")
+        self.signals = Signals()
+        self.signals.finished.connect(self._finished)
+        self.signals.notice.connect(self._notice)
+        self.signals.progress.connect(self._progress)
+        self.engine, self.session, self.hotkey = None, None, None
+        self.busy = False
+        self.root = Path(
+            self.settings.value("output", str(Path.home() / "Documents" / "qa-sessions"))
+        )
+        self.shortcut = self.settings.value("shortcut", "Ctrl+Alt+F9")
+        self._build()
+        self._devices()
+        self._sessions()
+        try:
+            self.hotkey = install_hotkey(QApplication.instance(), self._capture, self.shortcut)
+        except Exception as exc:
+            self._notice("error", str(exc))
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._tick)
+        self.timer.start(200)
+        self._controls()
+
+    def _build(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        layout = QVBoxLayout(central)
+        title = QLabel("Local QA Narrator")
+        title.setStyleSheet("font-size: 23px; font-weight: 600; margin-bottom: 6px")
+        layout.addWidget(title)
+        layout.addWidget(QLabel("Record your observations. Capture evidence. Export locally."))
+        self.status = QLabel("Ready · microphone is off")
+        self.status.setStyleSheet("font-size: 17px; padding: 12px 0; font-weight: 600")
+        layout.addWidget(self.status)
+        self.stats = QLabel("00:00  ·  0 screenshots")
+        layout.addWidget(self.stats)
+        row = QHBoxLayout()
+        self.mics = QComboBox()
+        self.mics.setMinimumWidth(300)
+        self.refresh_mics = QPushButton("Refresh microphones")
+        self.refresh_mics.clicked.connect(self._devices)
+        row.addWidget(self.mics, 1)
+        row.addWidget(self.refresh_mics)
+        layout.addLayout(row)
+        row = QHBoxLayout()
+        self.start = QPushButton("Start Recording")
+        self.pause = QPushButton("Pause")
+        self.stop = QPushButton("Stop Recording")
+        for button, slot in (
+            (self.start, self._start),
+            (self.pause, self._pause),
+            (self.stop, self._stop),
+        ):
+            button.clicked.connect(slot)
+            row.addWidget(button)
+        layout.addLayout(row)
+        self.hint = QLabel(f"Switch to your application and press {self.shortcut} to capture.")
+        self.hint.setWordWrap(True)
+        layout.addWidget(self.hint)
+        self.message = QLabel("")
+        self.message.setWordWrap(True)
+        self.message.setMinimumHeight(42)
+        layout.addWidget(self.message)
+        self.processing = QLabel("Transcription/export: no session selected")
+        self.processing.setWordWrap(True)
+        layout.addWidget(self.processing)
+
+        group = QGroupBox("Sessions")
+        form = QVBoxLayout(group)
+        self.sessions = QComboBox()
+        self.sessions.currentIndexChanged.connect(self._select_session)
+        form.addWidget(self.sessions)
+        self.location = QLabel(str(self.root))
+        self.location.setWordWrap(True)
+        self.location.setTextInteractionFlags(self.location.textInteractionFlags())
+        form.addWidget(self.location)
+        row = QHBoxLayout()
+        self.open_folder = QPushButton("Open Session Folder")
+        self.open_md = QPushButton("Open Markdown")
+        self.browse_session = QPushButton("Open Saved Session…")
+        self.open_folder.clicked.connect(lambda: self._open(self.session.folder))
+        self.open_md.clicked.connect(lambda: self._open(self.session.folder / "feedback.md"))
+        self.browse_session.clicked.connect(self._browse_session)
+        for button in (self.open_folder, self.open_md, self.browse_session):
+            row.addWidget(button)
+        form.addLayout(row)
+        row = QHBoxLayout()
+        self.retry = QPushButton("Recover / Retry Transcription")
+        self.regenerate = QPushButton("Regenerate Markdown")
+        self.retry.clicked.connect(self._process)
+        self.regenerate.clicked.connect(self._export)
+        row.addWidget(self.retry)
+        row.addWidget(self.regenerate)
+        form.addLayout(row)
+        layout.addWidget(group)
+
+        self.options = QGroupBox("Settings")
+        form = QFormLayout(self.options)
+        self.shortcut_button = QPushButton(f"{self.shortcut}  ·  Change…")
+        self.shortcut_button.clicked.connect(self._choose_shortcut)
+        form.addRow("Screenshot shortcut", self.shortcut_button)
+        row = QHBoxLayout()
+        self.output_text = QLineEdit(str(self.root))
+        choose = QPushButton("Browse…")
+        choose.clicked.connect(self._choose_root)
+        row.addWidget(self.output_text)
+        row.addWidget(choose)
+        form.addRow("Save sessions to", row)
+        self.mode = QComboBox()
+        for text, value in (
+            ("Active window (monitor fallback)", "window"),
+            ("Selected monitor", "monitor"),
+            ("All monitors", "desktop"),
+        ):
+            self.mode.addItem(text, value)
+        self.mode.setCurrentIndex(max(0, self.mode.findData(self.settings.value("mode", "window"))))
+        form.addRow("Capture", self.mode)
+        self.monitors = QComboBox()
+        try:
+            import mss
+
+            with mss.mss() as screen:
+                for i, monitor in enumerate(screen.monitors[1:], 1):
+                    self.monitors.addItem(
+                        f"Monitor {i} · {monitor['width']} × {monitor['height']}", i
+                    )
+        except Exception as exc:
+            self._notice("error", str(exc))
+        index = self.monitors.findData(int(self.settings.value("monitor", 1)))
+        self.monitors.setCurrentIndex(max(0, index))
+        form.addRow("Monitor / fallback", self.monitors)
+        self.model = QComboBox()
+        self.model.addItems(MODELS)
+        self.model.setCurrentText(self.settings.value("model", "base.en"))
+        row = QHBoxLayout()
+        row.addWidget(self.model)
+        self.download = QPushButton("Download Model (one-time)")
+        self.download.clicked.connect(self._download)
+        row.addWidget(self.download)
+        form.addRow("English CPU model", row)
+        self.embed_images = QCheckBox("Embed screenshots in Markdown (portable PNG/base64)")
+        self.embed_images.setChecked(self.settings.value("embed_images", False, type=bool))
+        self.embed_images.toggled.connect(self._save_export_preference)
+        form.addRow("Export", self.embed_images)
+        export_hint = QLabel(
+            "One file to share; larger size. Some viewers/agents need to extract the images."
+        )
+        export_hint.setWordWrap(True)
+        form.addRow("", export_hint)
+        apply = QPushButton("Apply Settings")
+        apply.clicked.connect(self._apply)
+        form.addRow(apply)
+        layout.addWidget(self.options)
+        privacy = QLabel(
+            "Audio, screenshots, and transcription stay on this computer.\n"
+            "Only Download Model uses the internet. Capture is disabled while paused."
+        )
+        privacy.setWordWrap(True)
+        layout.addWidget(privacy)
+
+    def _devices(self):
+        import sounddevice as sd
+
+        selected = self.mics.currentText() or self.settings.value("microphone", "")
+        self.mics.clear()
+        try:
+            default = sd.default.device[0]
+            for index, device in enumerate(sd.query_devices()):
+                if device["max_input_channels"] > 0:
+                    host = sd.query_hostapis(device["hostapi"])["name"]
+                    self.mics.addItem(f"{device['name']} ({host})", index)
+                    if index == default:
+                        self.mics.setCurrentIndex(self.mics.count() - 1)
+            saved = self.mics.findText(selected)
+            if saved >= 0:
+                self.mics.setCurrentIndex(saved)
+            if not self.mics.count():
+                self._notice(
+                    "error", "No microphone found. Connect one and click Refresh microphones."
+                )
+        except Exception as exc:
+            self._notice("error", f"Cannot enumerate microphones: {exc}")
+        self._controls()
+
+    def _sessions(self, selected=None):
+        self.sessions.blockSignals(True)
+        self.sessions.clear()
+        items = list_sessions(self.root)
+        if selected and all(s.folder != selected.folder for s in items):
+            items.insert(0, selected)
+        for session in items:
+            data = session.data
+            label = f"{session.folder.name} · {data['status']} · export: {data.get('export_status', 'pending')}"
+            self.sessions.addItem(label, str(session.folder))
+        desired = str(selected.folder) if selected else self.settings.value("recent", "")
+        index = self.sessions.findData(desired)
+        self.sessions.setCurrentIndex(max(0, index) if items else -1)
+        self.sessions.blockSignals(False)
+        self._select_session()
+
+    def _select_session(self):
+        folder = self.sessions.currentData()
+        self.session = Session.load(folder) if folder else None
+        if self.session:
+            self.settings.setValue("recent", folder)
+            self.location.setText(folder)
+            data = self.session.data
+            self.processing.setText(
+                f"Transcription: {data['transcription_status']} · Export: {data['export_status']}"
+            )
+            self.stats.setText(
+                f"{timestamp(data['duration'])}  ·  {len(self.session.screenshots())} screenshots"
+            )
+            if data["status"] in ("recording", "paused", "stopping", "capture_error"):
+                self._notice(
+                    "warning",
+                    "Incomplete session found. Click Recover / Retry Transcription to process saved audio.",
+                )
+        self._controls()
+
+    def _controls(self):
+        if not hasattr(self, "options"):
+            return
+        active, idle = self.engine is not None, not self.busy and self.engine is None
+        self.start.setEnabled(idle and self.mics.count() > 0 and self.hotkey is not None)
+        self.pause.setEnabled(active and not self.busy)
+        self.stop.setEnabled(active and not self.busy)
+        for widget in (
+            self.options,
+            self.sessions,
+            self.mics,
+            self.refresh_mics,
+            self.browse_session,
+        ):
+            widget.setEnabled(idle)
+        self.retry.setEnabled(idle and self.session is not None)
+        self.regenerate.setEnabled(
+            idle
+            and self.session is not None
+            and (self.session.folder / "transcription.json").exists()
+        )
+        self.open_folder.setEnabled(self.session is not None)
+        self.open_md.setEnabled(
+            self.session is not None and (self.session.folder / "feedback.md").exists()
+        )
+
+    def _run(self, operation, success, failure=None):
+        self.busy = True
+        self._controls()
+        future = self.pool.submit(operation)
+
+        def done(result):
+            try:
+                value, error = result.result(), None
+            except Exception as exc:
+                value, error = None, exc
+            self.signals.finished.emit((success, failure), value, error)
+
+        future.add_done_callback(done)
+
+    def _finished(self, callbacks, result, error):
+        success, failure = callbacks
+        self.busy = False
+        if error and failure:
+            failure(error)
+        elif error:
+            self.status.setText(
+                "Needs attention · microphone is off"
+                if not self.engine
+                else "Recording needs attention"
+            )
+            self._notice("error", str(error))
+            if not self.engine:
+                self._sessions(self.session)
+        else:
+            success(result)
+        self._controls()
+
+    def _notice(self, kind, text):
+        self.message.setStyleSheet("color: #b42318" if kind == "error" else "color: #286343")
+        self.message.setText(text)
+        if kind == "screenshot":
+            QApplication.alert(self, 800)  # taskbar flash, no focus stealing or screen overlay
+
+    def _progress(self, text):
+        self.processing.setText(text)
+
+    def _start(self):
+        if not self._apply():
+            return
+        device, name = self.mics.currentData(), self.mics.currentText()
+        self.settings.setValue("microphone", name)
+        self.status.setText("Starting microphone…")
+        self._run(
+            lambda: CaptureEngine(self.root, device, name, self.signals.notice.emit).start(),
+            self._started,
+        )
+
+    def _started(self, engine):
+        self.engine = engine
+        self.session = engine.session
+        self.location.setText(str(self.session.folder))
+        self.settings.setValue("recent", str(self.session.folder))
+        self.message.clear()
+        self.processing.setText("Transcription begins after Stop Recording.")
+        self.pause.setText("Pause")
+        self._tick()
+
+    def _pause(self):
+        try:
+            self.engine.pause_resume()
+            self.pause.setText("Resume" if self.engine.timeline.state == "paused" else "Pause")
+        except Exception as exc:
+            self._notice("error", str(exc))
+            self._stop()
+
+    def _stop(self):
+        engine = self.engine
+        if not engine or self.busy:
+            return
+        self.engine = None
+        self.status.setText("Stopping and saving audio…")
+        self._run(engine.stop, self._stopped)
+
+    def _stopped(self, session):
+        self.session = session
+        self.status.setText("Stopped · microphone is off")
+        self._sessions(session)
+        self._process()
+
+    def _capture(self):
+        if self.engine and not self.busy and self.engine.timeline.state == "recording":
+            try:
+                self.engine.capture(
+                    capture_target(self.mode.currentData(), self.monitors.currentData())
+                )
+            except Exception as exc:
+                self._notice("error", str(exc))
+
+    def _tick(self):
+        if self.engine:
+            timeline = self.engine.timeline
+            self.status.setText(
+                "● Recording · microphone is on"
+                if timeline.state == "recording"
+                else "Ⅱ Paused · audio is not being saved"
+            )
+            self.status.setStyleSheet(
+                "font-size: 17px; padding: 12px 0; font-weight: 600; color: "
+                + ("#c02a2a" if timeline.state == "recording" else "#805600")
+            )
+            self.stats.setText(
+                f"{timestamp(timeline.elapsed())}  ·  {len(self.engine.session.screenshots())} screenshots"
+            )
+            error = self.engine.check_error()
+            if error:
+                try:
+                    self.engine.session.event(
+                        {"kind": "warning", "t": timeline.elapsed(), "message": error}
+                    )
+                except OSError:
+                    pass  # Stop/close the device even when the disk is full.
+                self._notice("error", error)
+                self._stop()
+
+    def _process(self):
+        session, model = self.session, self.model.currentText()
+        embed_images = self.embed_images.isChecked()
+        if not session:
+            return
+
+        def work():
+            session.recover()
+            if not (session.folder / "audio.wav").exists():
+                session.finalize_audio()
+            return process_session(
+                session, model, self.signals.progress.emit, embed_images=embed_images
+            )
+
+        self.status.setText("Processing · microphone is off")
+        self._run(work, self._processed)
+
+    def _processed(self, path):
+        self.status.setText("Complete · microphone is off")
+        self._sessions(self.session)
+        self._notice("success", f"Ready: {path}")
+
+    def _save_export_preference(self, checked):
+        self.settings.setValue("embed_images", checked)
+        self.settings.sync()
+
+    def _export(self, overwrite=False):
+        session, embed_images = self.session, self.embed_images.isChecked()
+        if not session:
+            return
+
+        def failed(error):
+            if isinstance(error, FileExistsError):
+                answer = QMessageBox.question(
+                    self,
+                    "Replace edited Markdown?",
+                    "feedback.md has changed since the last export. Replace your edits?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if answer == QMessageBox.Yes:
+                    self._export(overwrite=True)
+                else:
+                    self.processing.setText("Export cancelled; existing Markdown kept.")
+            else:
+                self.processing.setText("Export failed; existing Markdown kept.")
+                self._notice("error", str(error))
+
+        self.processing.setText(
+            "Writing portable Markdown…" if embed_images else "Writing Markdown…"
+        )
+        self._run(
+            lambda: export_markdown(session, overwrite=overwrite, embed_images=embed_images),
+            self._processed,
+            failed,
+        )
+
+    def _choose_root(self):
+        folder = QFileDialog.getExistingDirectory(
+            self, "Choose session output directory", self.output_text.text()
+        )
+        if folder:
+            self.output_text.setText(folder)
+
+    def _browse_session(self):
+        folder = QFileDialog.getExistingDirectory(
+            self, "Open folder containing session.json", str(self.root)
+        )
+        if folder:
+            try:
+                self._sessions(Session.load(folder))
+            except Exception as exc:
+                self._notice("error", str(exc))
+
+    def _choose_shortcut(self):
+        # Release the old registration while listening, so Windows does not consume
+        # that combination before the picker can record it again.
+        previous = self.shortcut
+        if self.hotkey:
+            self.hotkey.close()
+            self.hotkey = None
+        dialog = ShortcutDialog(self)
+        chosen = dialog.shortcut if dialog.exec() else None
+        candidate = chosen or previous
+        try:
+            self.hotkey = install_hotkey(QApplication.instance(), self._capture, candidate)
+        except Exception as exc:
+            self._notice("error", str(exc))
+            candidate = previous
+            try:
+                self.hotkey = install_hotkey(QApplication.instance(), self._capture, previous)
+            except Exception as restore_error:
+                self._notice(
+                    "error", f"{exc} Previous shortcut could not be restored: {restore_error}"
+                )
+        if self.hotkey:
+            self.shortcut = candidate
+            self.settings.setValue("shortcut", candidate)
+            self.settings.sync()
+            self.shortcut_button.setText(f"{candidate}  ·  Change…")
+            self.hint.setText(f"Switch to your application and press {candidate} to capture.")
+        self._controls()
+
+    def _apply(self):
+        try:
+            shortcut = self.shortcut
+            root = Path(self.output_text.text()).expanduser().resolve()
+            root.mkdir(parents=True, exist_ok=True)
+            if self.hotkey is None:
+                self.hotkey = install_hotkey(QApplication.instance(), self._capture, shortcut)
+            elif shortcut.lower() != self.shortcut.lower():
+                self.hotkey.configure(shortcut)
+            changed = root != self.root
+            self.root, self.shortcut = root, shortcut
+            for key, value in (
+                ("output", str(root)),
+                ("shortcut", shortcut),
+                ("mode", self.mode.currentData()),
+                ("monitor", self.monitors.currentData()),
+                ("model", self.model.currentText()),
+            ):
+                self.settings.setValue(key, value)
+            self.settings.sync()
+            self.hint.setText(f"Switch to your application and press {shortcut} to capture.")
+            if changed:
+                self._sessions()
+            self._controls()
+            return True
+        except Exception as exc:
+            self._notice("error", str(exc))
+            return False
+
+    def _download(self):
+        name = self.model.currentText()
+        self.processing.setText(f"Downloading {name} to {model_root()}…")
+        self._run(
+            lambda: download_model(name),
+            lambda path: self.processing.setText(f"Model installed. Ready for offline use: {path}"),
+        )
+
+    def _open(self, path):
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+            self._notice(
+                "error", f"Could not open {path}. Configure a default app for Markdown in Windows."
+            )
+
+    def closeEvent(self, event):
+        if self.engine or self.busy:
+            QMessageBox.information(
+                self,
+                "Session in progress",
+                "Stop recording and wait for processing to finish before closing. "
+                "You can minimize this window while it works.",
+            )
+            event.ignore()
+            return
+        if self.hotkey:
+            self.hotkey.close()
+        self.pool.shutdown(wait=False)
+        event.accept()
+
+
+def run():
+    from .windows import enable_dpi_awareness
+
+    enable_dpi_awareness()
+    app = QApplication(sys.argv)
+    app.setStyle("Fusion")
+    window = MainWindow()
+    window.show()
+    return app.exec()
