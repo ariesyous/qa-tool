@@ -8,7 +8,7 @@ voice and transcribes it on your Windows PC, ready for you to share with a teamm
 or coding agent.
 
 **[Download for Windows →](https://github.com/ariesyous/qa-tool/releases/latest)**
-Choose **QANarrator-v0.2.0-windows-x64.zip**, then follow the [quick start](#download-and-launch).
+Choose **QANarrator-v0.3.0-windows-x64.zip**, then follow the [quick start](#download-and-launch).
 Requires Windows 10/11 x64.
 
 [Quick start](#download-and-launch) · [First walkthrough](#your-first-walkthrough) · [Screenshot shortcuts](#screenshot-shortcuts) · [Portable Markdown](#portable-markdown-with-embedded-screenshots) · [Troubleshooting](#troubleshooting) · [Developer setup](#setup-from-source)
@@ -28,7 +28,7 @@ model download needs internet access; transcription runs locally afterward.
 
 ## Download and launch
 
-1. Download **QANarrator-v0.2.0-windows-x64.zip** from the
+1. Download **QANarrator-v0.3.0-windows-x64.zip** from the
    [latest release](https://github.com/ariesyous/qa-tool/releases/latest).
 2. Extract the ZIP, then double-click **`QANarrator\QANarrator.exe`**.
    Keep the entire extracted `QANarrator` folder together, including `_internal`.
@@ -84,7 +84,7 @@ also retains its normal behavior in the reviewed app.
 
 ## Portable Markdown with embedded screenshots
 
-Enable **Settings → Export → Embed screenshots in Markdown (portable PNG/base64)**.
+Enable **Settings → Export → Embed screenshots in Markdown (portable)**.
 The preference saves immediately. New sessions embed their screenshots on export.
 For an existing session, select it and click **Regenerate Markdown**; no new recording
 or transcription is required. Uncheck the option and regenerate to return to relative
@@ -93,8 +93,42 @@ Export encoding runs in the background so large screenshots do not freeze the UI
 
 ![Settings with portable Markdown screenshot embedding enabled](docs/screenshots/export-settings.png)
 
-With this option, share **only `feedback.md`**: each image uses
-`![Screenshot 001](data:image/png;base64,...)` containing the original PNG bytes.
+With this option, share **only `feedback.md`**. Choose **Embedded image quality**:
+
+- **Compact — under 25 MB** (the UI default): targets at most **24,000,000 bytes**
+  for the complete Markdown, including text and base64. Images start at a maximum
+  longest edge of 2560 pixels with JPEG quality 90. PNG is retained when smaller;
+  transparent images stay PNG. If necessary, the exporter tries lower settings,
+  stopping at a longest edge of 1920 pixels and JPEG quality 80. Small images are
+  never enlarged. Compression can soften small text; original captures are retained.
+  If the report still cannot fit, export stops with an explanation and keeps the
+  previous file. Split the report, use linked images, or select raw output.
+- **Raw — original PNGs, no size limit**: embeds the original PNG bytes exactly,
+  preserving full resolution. Use this when original image fidelity matters most.
+
+The app and CLI report the final file size, warn from 20 MB, and flag files at or
+above 25 MB. Existing sessions also show the current Markdown size when selected.
+MB here means 1,000,000 bytes, leaving room beneath either a 25 MB or 25 MiB limit.
+
+To shrink a report you already created, click **Shrink Markdown…** and select the
+file. This works without the original session and saves `name.compact.md` beside it
+(or a numbered copy if that name exists). It compresses embedded PNG/JPEG images,
+preserving all other bytes, including manual notes. The original Markdown stays
+untouched. Linked images are not embedded or resized by this action.
+
+During shrinking or compact export, an animated activity bar and status text show
+the current screenshot and compression pass, followed by assembling and saving.
+Additional passes run only if needed to meet the size target; the bar indicates
+ongoing work rather than an estimated percentage or time remaining.
+
+**Shrink Markdown…** also shows a **Cancel** button beside the activity bar.
+Cancellation waits for the current image or file operation to finish, then stops
+without saving a compact copy. The original and any earlier compact copies stay
+untouched. The app shows “Cancelling…” until the worker stops, then lets you retry.
+If the copy was already saved before cancellation reached it, the app reports
+the completed copy instead. This button applies to standalone shrinking.
+
+Embedded images use `data:image/png;base64,...` or `data:image/jpeg;base64,...` URLs.
 The source screenshots and audio remain in the session folder. The exported document
 contains the feedback and screenshots; audio is not embedded. Base64 adds roughly
 one third to the image data size, so the Markdown can be large.
@@ -110,11 +144,15 @@ Relative-image export remains the default for compatibility.
 
 ```powershell
 uv run qa-narrator --export "C:\path\to\session" --embed-images
+uv run qa-narrator --export "C:\path\to\session" --embed-images --image-quality compact
+uv run qa-narrator --export "C:\path\to\session" --embed-images --image-quality raw
 uv run qa-narrator --export "C:\path\to\session" --linked-images
+uv run qa-narrator --shrink-markdown "C:\path\to\feedback.md"
 ```
 
-Both flags also work with `--process`. If neither flag is passed, CLI regeneration
-uses that session's last successful export mode (linked images for older sessions).
+Image mode and quality flags also work with `--process`. When omitted, CLI
+regeneration uses that session's last successful settings (linked images and raw
+quality for older sessions). `--image-quality` only affects embedded exports.
 
 </details>
 

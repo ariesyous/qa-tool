@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 
-def atomic_bytes(path, data):
+def atomic_bytes(path, data, before_replace=lambda: None):
     path = Path(path)
     tmp = path.with_name(path.name + ".tmp-" + uuid.uuid4().hex)
     try:
@@ -17,6 +17,7 @@ def atomic_bytes(path, data):
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
+        before_replace()
         os.replace(tmp, path)
     finally:
         tmp.unlink(missing_ok=True)

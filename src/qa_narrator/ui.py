@@ -1,10 +1,11 @@
 """Minimal Qt interface; expensive work runs outside the GUI thread."""
 
 import sys
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import CancelledError, ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 
-from PySide6.QtCore import QObject, QSettings, QTimer, QUrl, Signal
+from PySide6.QtCore import QObject, QSettings, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QApplication,
@@ -18,12 +19,14 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
 from .capture import CaptureEngine
+from .compact import LARGE_EXPORT_BYTES, shrink_markdown, size_notice
 from .export import export_markdown, timestamp
 from .shortcut import AdditionalShortcutsDialog, ShortcutDialog
 from .storage import Session, list_sessions
@@ -45,11 +48,13 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("LocalQANarrator", "QANarrator")
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="processing")
         self.signals = Signals()
-        self.signals.finished.connect(self._finished)
+        # Even an already-finished Future must queue completion after its progress updates.
+        self.signals.finished.connect(self._finished, Qt.QueuedConnection)
         self.signals.notice.connect(self._notice)
         self.signals.progress.connect(self._progress)
         self.engine, self.session, self.hotkey = None, None, None
         self.busy = False
+        self._cancel_event = None
         self.root = Path(
             self.settings.value("output", str(Path.home() / "Documents" / "qa-sessions"))
         )
@@ -59,7 +64,9 @@ class MainWindow(QMainWindow):
         self._devices()
         self._sessions()
         try:
-            self.hotkey = ScreenshotShortcuts(QApplication.instance(), self._capture, self._shortcuts())
+            self.hotkey = ScreenshotShortcuts(
+                QApplication.instance(), self._capture, self._shortcuts()
+            )
         except Exception as exc:
             self._notice("error", str(exc))
         self.timer = QTimer(self)
@@ -110,6 +117,20 @@ class MainWindow(QMainWindow):
         self.processing = QLabel("Transcription/export: no session selected")
         self.processing.setWordWrap(True)
         layout.addWidget(self.processing)
+        self.activity = QProgressBar()
+        self.activity.setRange(0, 0)
+        self.activity.setTextVisible(False)
+        self.activity.setFixedHeight(10)
+        self.activity.setAccessibleName("Background task in progress")
+        self.activity.hide()
+        self.cancel_shrink = QPushButton("Cancel")
+        self.cancel_shrink.setToolTip("Stop shrinking after the current image operation finishes")
+        self.cancel_shrink.clicked.connect(self._cancel_shrink)
+        self.cancel_shrink.hide()
+        row = QHBoxLayout()
+        row.addWidget(self.activity, 1)
+        row.addWidget(self.cancel_shrink)
+        layout.addLayout(row)
 
         group = QGroupBox("Sessions")
         form = QVBoxLayout(group)
@@ -135,8 +156,11 @@ class MainWindow(QMainWindow):
         self.regenerate = QPushButton("Regenerate Markdown")
         self.retry.clicked.connect(self._process)
         self.regenerate.clicked.connect(self._export)
+        self.shrink = QPushButton("Shrink Markdown…")
+        self.shrink.clicked.connect(self._shrink_markdown)
         row.addWidget(self.retry)
         row.addWidget(self.regenerate)
+        row.addWidget(self.shrink)
         form.addLayout(row)
         layout.addWidget(group)
 
@@ -188,14 +212,26 @@ class MainWindow(QMainWindow):
         self.download.clicked.connect(self._download)
         row.addWidget(self.download)
         form.addRow("English CPU model", row)
-        self.embed_images = QCheckBox("Embed screenshots in Markdown (portable PNG/base64)")
+        self.embed_images = QCheckBox("Embed screenshots in Markdown (portable)")
         self.embed_images.setChecked(self.settings.value("embed_images", False, type=bool))
         self.embed_images.toggled.connect(self._save_export_preference)
         form.addRow("Export", self.embed_images)
+        self.image_quality = QComboBox()
+        self.image_quality.addItem("Compact — under 25 MB", "compact")
+        self.image_quality.addItem("Raw — original PNGs, no size limit", "raw")
+        self.image_quality.setCurrentIndex(
+            max(0, self.image_quality.findData(self.settings.value("image_quality", "compact")))
+        )
+        self.image_quality.setEnabled(self.embed_images.isChecked())
+        self.embed_images.toggled.connect(self.image_quality.setEnabled)
+        self.image_quality.currentIndexChanged.connect(self._save_image_quality)
+        form.addRow("Embedded image quality", self.image_quality)
         export_hint = QLabel(
-            "One file to share; larger size. Some viewers/agents need to extract the images."
+            "Compact targets 24 MB; original captures are kept.\n"
+            "Some viewers require extracting embedded images."
         )
         export_hint.setWordWrap(True)
+        export_hint.setMinimumHeight(export_hint.fontMetrics().lineSpacing() * 2 + 4)
         form.addRow("", export_hint)
         apply = QPushButton("Apply Settings")
         apply.clicked.connect(self._apply)
@@ -258,6 +294,11 @@ class MainWindow(QMainWindow):
             self.processing.setText(
                 f"Transcription: {data['transcription_status']} · Export: {data['export_status']}"
             )
+            output = self.session.folder / "feedback.md"
+            if output.exists():
+                self.processing.setText(
+                    self.processing.text() + "\nMarkdown: " + size_notice(output.stat().st_size)
+                )
             self.stats.setText(
                 f"{timestamp(data['duration'])}  ·  {len(self.session.screenshots())} screenshots"
             )
@@ -281,6 +322,7 @@ class MainWindow(QMainWindow):
             self.mics,
             self.refresh_mics,
             self.browse_session,
+            self.shrink,
         ):
             widget.setEnabled(idle)
         self.retry.setEnabled(idle and self.session is not None)
@@ -294,8 +336,13 @@ class MainWindow(QMainWindow):
             self.session is not None and (self.session.folder / "feedback.md").exists()
         )
 
-    def _run(self, operation, success, failure=None):
+    def _run(self, operation, success, failure=None, cancel_event=None):
         self.busy = True
+        self._cancel_event = cancel_event
+        self.cancel_shrink.setText("Cancel")
+        self.cancel_shrink.setEnabled(cancel_event is not None)
+        self.cancel_shrink.setVisible(cancel_event is not None)
+        self.activity.show()
         self._controls()
         future = self.pool.submit(operation)
 
@@ -311,6 +358,9 @@ class MainWindow(QMainWindow):
     def _finished(self, callbacks, result, error):
         success, failure = callbacks
         self.busy = False
+        self._cancel_event = None
+        self.cancel_shrink.hide()
+        self.activity.hide()
         if error and failure:
             failure(error)
         elif error:
@@ -333,7 +383,16 @@ class MainWindow(QMainWindow):
             QApplication.alert(self, 800)  # taskbar flash, no focus stealing or screen overlay
 
     def _progress(self, text):
+        if self._cancel_event is not None and self._cancel_event.is_set():
+            return  # Keep the cancellation acknowledgement visible until the worker stops.
         self.processing.setText(text)
+
+    def _cancel_shrink(self):
+        if self._cancel_event is not None:
+            self._cancel_event.set()
+            self.cancel_shrink.setEnabled(False)
+            self.cancel_shrink.setText("Cancelling…")
+            self.processing.setText("Cancelling… waiting for the current operation to finish.")
 
     def _start(self):
         if not self._apply():
@@ -416,6 +475,7 @@ class MainWindow(QMainWindow):
     def _process(self):
         session, model = self.session, self.model.currentText()
         embed_images = self.embed_images.isChecked()
+        image_quality = self.image_quality.currentData()
         if not session:
             return
 
@@ -424,7 +484,11 @@ class MainWindow(QMainWindow):
             if not (session.folder / "audio.wav").exists():
                 session.finalize_audio()
             return process_session(
-                session, model, self.signals.progress.emit, embed_images=embed_images
+                session,
+                model,
+                self.signals.progress.emit,
+                embed_images=embed_images,
+                image_quality=image_quality,
             )
 
         self.status.setText("Processing · microphone is off")
@@ -433,7 +497,50 @@ class MainWindow(QMainWindow):
     def _processed(self, path):
         self.status.setText("Complete · microphone is off")
         self._sessions(self.session)
-        self._notice("success", f"Ready: {path}")
+        self._export_notice(path)
+
+    def _export_notice(self, path):
+        size = path.stat().st_size
+        self._notice(
+            "warning" if size >= LARGE_EXPORT_BYTES else "success",
+            f"Ready: {path}\n{size_notice(size)}",
+        )
+
+    def _save_image_quality(self, _index):
+        self.settings.setValue("image_quality", self.image_quality.currentData())
+        self.settings.sync()
+
+    def _shrink_markdown(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Shrink embedded-image Markdown (original is kept)",
+            str(self.session.folder if self.session else self.root),
+            "Markdown (*.md *.markdown)",
+        )
+        if path:
+            cancel_event = Event()
+            self.processing.setText("Shrinking Markdown to a separate copy…")
+
+            def done(output):
+                self.processing.setText("Compact copy saved: " + size_notice(output.stat().st_size))
+                self._export_notice(output)
+
+            def failed(error):
+                if isinstance(error, CancelledError):
+                    self.processing.setText("Shrinking cancelled; original Markdown kept.")
+                    self._notice("success", "No compact copy was saved. You can try again anytime.")
+                    return
+                self.processing.setText("Shrink failed; original Markdown kept.")
+                self._notice("error", str(error))
+
+            self._run(
+                lambda: shrink_markdown(
+                    path, progress=self.signals.progress.emit, cancelled=cancel_event.is_set
+                ),
+                done,
+                failed,
+                cancel_event=cancel_event,
+            )
 
     def _save_export_preference(self, checked):
         self.settings.setValue("embed_images", checked)
@@ -441,6 +548,7 @@ class MainWindow(QMainWindow):
 
     def _export(self, overwrite=False):
         session, embed_images = self.session, self.embed_images.isChecked()
+        image_quality = self.image_quality.currentData()
         if not session:
             return
 
@@ -465,7 +573,13 @@ class MainWindow(QMainWindow):
             "Writing portable Markdown…" if embed_images else "Writing Markdown…"
         )
         self._run(
-            lambda: export_markdown(session, overwrite=overwrite, embed_images=embed_images),
+            lambda: export_markdown(
+                session,
+                overwrite=overwrite,
+                embed_images=embed_images,
+                image_quality=image_quality,
+                progress=self.signals.progress.emit,
+            ),
             self._processed,
             failed,
         )

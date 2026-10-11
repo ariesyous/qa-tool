@@ -1,5 +1,89 @@
 # Validation record
 
+## v0.3.0 release
+
+On October 11, 2026, the release executable was rebuilt at
+`dist/v0.3.0/QANarrator/QANarrator.exe`; its embedded package version was verified
+as 0.3.0. All **95 tests**, lint, and the offline lockfile check passed.
+The release executable passed compact/raw export, standalone shrinking, progress
+callbacks, cancellation during save, offline synthetic transcription/export,
+embedded PNG roundtrip verification, and GUI launch/normal close. The ZIP contains
+the complete application folder, documentation, and bundled dependency licenses;
+`SHA256SUMS.txt` provides the archive checksum.
+
+## Cancel standalone Markdown shrinking
+
+On October 11, 2026, **95 automated tests passed** with
+`pytest --basetemp=.validation/pytest-shrink-cancel`; lint passed for `src` and
+`tests`. Cancellation checks cover reading, scanning, image processing, assembly,
+and the final save. A cancellation after the temporary output is flushed removes
+that temporary file before it can replace the destination. Original files and
+previous compact copies are preserved.
+
+Qt worker tests verify the Cancel button, immediate cancellation acknowledgement,
+suppression of stale progress updates, cleanup/restored controls, and a successful
+retry with a fresh cancellation event. Cancellation during image encoding is
+reported as cancellation rather than an invalid image. The ready-to-cancel and
+cancellation-pending states were visually inspected with isolated settings and
+mocked capture devices; the shrink worker itself ran normally.
+
+The executable is `dist/shrink-cancel/QANarrator/QANarrator.exe`. Packaged
+compact/raw exports, standalone shrinking, progress callbacks, and cancellation
+during save passed, with no partial copy or temporary file left behind. Offline
+transcription/export and GUI launch/normal close also passed.
+
+## Screenshot optimization progress
+
+On October 11, 2026, **87 automated tests passed** with
+`pytest --basetemp=.validation/pytest-progress-final`; lint passed for `src` and
+`tests`. Progress callbacks cover reading, scanning, screenshot preparation,
+optimization by screenshot and pass, assembling, and saving. The multi-pass test
+checks ordered progress across both images and compression passes. Transcription
+forwards its progress callback into compact export.
+
+Real Qt worker tests hold an image operation in progress to verify that its status
+appears before completion, the activity bar is visible, and controls are disabled.
+Success and failure both clear the activity bar and restore controls; shrink
+failure replaces the in-progress status with an error. An offscreen preview of
+the running task was also checked using isolated settings and mocked devices.
+An additional regression test verifies that already-completed workers deliver
+completion after queued progress, preventing a stale “Saving…” status. All 18
+UI/shortcut tests passed after that correction, and lint passed again.
+
+The final executable is `dist/shrink-progress/QANarrator/QANarrator.exe`.
+Packaged compact/raw export, standalone shrinking, progress callbacks, offline
+transcription, and GUI launch/normal close passed. The packaged Python archive
+was also checked for the queued completion fix.
+
+## Compact Markdown export
+
+On October 11, 2026, **84 automated tests passed** with
+`pytest --basetemp=.validation/pytest-compact-3`; lint passed for `src` and `tests`.
+After the UI help-label layout correction, all 15 UI/shortcut tests passed again;
+the expanded multi-image budget test also passed independently.
+
+Coverage includes exact file-size accounting across images, progressive compression,
+failure at the quality floor without overwriting an existing export, transparent
+PNG preservation, invalid image handling, raw PNG byte preservation, preference
+persistence, CLI and transcription forwarding, UI mode selection, size-warning
+boundaries, and shrinking standalone Markdown without altering manual notes or
+overwriting the original or a previous compact copy.
+
+A deterministic high-entropy 3840×2160 fixture shrank from **33,227,636 bytes to
+7,410,165 bytes**. A separate synthetic 4K interface with text and a noisy image
+region shrank from 17.7 MB to 2.3 MB at 2560×1440; its text was visually inspected.
+The Qt layout and background-worker completion were also checked with isolated
+settings and mocked capture devices. Readability of every real screenshot and
+support for data URLs in every Markdown viewer are not guaranteed by these checks.
+
+The Windows build is at `dist/compact-export/QANarrator/QANarrator.exe`.
+Packaged compact export, raw PNG roundtrip, and standalone shrinking all passed;
+the embedded Python archive was checked for the final UI layout change.
+`smoke_packaged.py --exe dist/compact-export/QANarrator/QANarrator.exe --embed-images`
+passed offline synthetic transcription/export and GUI launch/normal close, with
+`QA_NARRATOR_MODEL_DIR` pointing to the existing installed model folder because
+the sandbox redirects the default application-data directory.
+
 ## v0.2.0 release
 
 The release build at `dist/v0.2.0/QANarrator/QANarrator.exe` was rebuilt from source

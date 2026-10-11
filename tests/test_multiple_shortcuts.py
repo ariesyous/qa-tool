@@ -160,6 +160,150 @@ def choose(monkeypatch, window, text, index=None):
     return window._choose_shortcut(index)
 
 
+def test_export_quality_defaults_persists_and_follows_embedding(window, monkeypatch):
+    assert window.image_quality.currentData() == "compact"
+    assert not window.image_quality.isEnabled()
+    window.embed_images.setChecked(True)
+    assert window.image_quality.isEnabled()
+    window.image_quality.setCurrentIndex(window.image_quality.findData("raw"))
+    assert window.settings.value("image_quality") == "raw"
+    window.close()
+    reopened = MainWindow()
+    try:
+        assert reopened.embed_images.isChecked()
+        assert reopened.image_quality.currentData() == "raw"
+        reopened.embed_images.setChecked(False)
+        assert not reopened.image_quality.isEnabled()
+        assert reopened.shrink.isEnabled()
+    finally:
+        reopened.close()
+
+
+def test_ui_exports_selected_quality_and_shrinks_without_session(window, monkeypatch, tmp_path):
+    from qa_narrator.storage import Session, atomic_json
+
+    session = Session.create(tmp_path / "exports", 16000, "Test")
+    atomic_json(session.folder / "transcription.json", {"segments": []})
+    window.session = session
+    window.embed_images.setChecked(True)
+    monkeypatch.setattr(window, "_run", lambda work, done, *args, **kw: done(work()))
+    monkeypatch.setattr(window, "_sessions", lambda *args: None)
+    window._export()
+    assert session.data["export_image_quality"] == "compact"
+    assert "MB" in window.message.text()
+    window.image_quality.setCurrentIndex(window.image_quality.findData("raw"))
+    window._export()
+    assert session.data["export_image_quality"] == "raw"
+    source = session.folder / "feedback.md"
+    original = source.read_bytes()
+    window.session = None
+    monkeypatch.setattr("qa_narrator.ui.QFileDialog.getOpenFileName", lambda *a: (str(source), ""))
+    window._shrink_markdown()
+    assert source.read_bytes() == original
+    assert source.with_name("feedback.compact.md").exists()
+    assert "Compact copy saved" in window.processing.text()
+
+
+@pytest.mark.parametrize("outcome", ["success", "failure", "cancel"])
+def test_shrink_worker_shows_live_progress_and_clears_activity(
+    window, app, monkeypatch, tmp_path, outcome
+):
+    import base64
+    import io
+    import threading
+    import time
+
+    from PIL import Image
+
+    from qa_narrator import compact
+
+    png = io.BytesIO()
+    Image.new("RGB", (12, 8)).save(png, format="PNG")
+    source = tmp_path / "feedback.md"
+    source.write_bytes(b"![shot](data:image/png;base64," + base64.b64encode(png.getvalue()) + b")")
+    monkeypatch.setattr("qa_narrator.ui.QFileDialog.getOpenFileName", lambda *a: (str(source), ""))
+    released = threading.Event()
+    original = compact._smaller_image
+
+    def slow_image(*args):
+        if not released.wait(5):
+            raise TimeoutError("Test did not release worker")
+        if outcome == "failure":
+            raise ValueError("Invalid image fixture")
+        return original(*args)
+
+    monkeypatch.setattr(compact, "_smaller_image", slow_image)
+    try:
+        window._shrink_markdown()
+        deadline = time.monotonic() + 3
+        while "Optimizing screenshot" not in window.processing.text() and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        assert "Optimizing screenshot 1 of 1 — pass 1" in window.processing.text()
+        assert window.busy and not window.activity.isHidden()
+        assert not window.shrink.isEnabled()
+        assert not window.cancel_shrink.isHidden() and window.cancel_shrink.isEnabled()
+        if outcome == "cancel":
+            window.cancel_shrink.click()
+            assert window._cancel_event.is_set()
+            assert not window.cancel_shrink.isEnabled()
+            window._progress("Saving compact Markdown copy…")
+            assert window.processing.text().startswith("Cancelling…")
+    finally:
+        released.set()
+        deadline = time.monotonic() + 5
+        while window.busy and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+    assert not window.busy and window.activity.isHidden()
+    assert window.cancel_shrink.isHidden() and window._cancel_event is None
+    assert window.shrink.isEnabled()
+    if outcome == "failure":
+        assert "Shrink failed" in window.processing.text()
+        assert "Invalid image fixture" in window.message.text()
+        assert not source.with_name("feedback.compact.md").exists()
+    elif outcome == "cancel":
+        assert "Shrinking cancelled" in window.processing.text()
+        assert not source.with_name("feedback.compact.md").exists()
+        assert not list(tmp_path.glob("*.tmp-*"))
+        # A second run gets a fresh cancellation event and can complete normally.
+        window._shrink_markdown()
+        deadline = time.monotonic() + 5
+        while window.busy and time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.01)
+        assert not window.busy
+        assert "Compact copy saved" in window.processing.text()
+        assert source.with_name("feedback.compact.md").exists()
+    else:
+        assert "Compact copy saved" in window.processing.text()
+        assert source.with_name("feedback.compact.md").exists()
+
+
+def test_fast_worker_completion_follows_queued_progress(window, app, monkeypatch):
+    import threading
+    from concurrent.futures import Future
+
+    def already_completed(operation):
+        future = Future()
+
+        def worker():
+            window.signals.progress.emit("Saving Markdown…")
+            future.set_result(operation())
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        thread.join()
+        return future
+
+    monkeypatch.setattr(window.pool, "submit", already_completed)
+    window._run(lambda: "Complete", window.processing.setText)
+    assert window.cancel_shrink.isHidden()
+    app.processEvents()
+    assert window.processing.text() == "Complete"
+    assert not window.busy and window.activity.isHidden()
+
+
 def test_legacy_settings_add_change_remove_and_reopen(window, monkeypatch, native):
     assert window._shortcuts() == ["Ctrl+F9"]
     assert choose(monkeypatch, window, "Middle Mouse") is None

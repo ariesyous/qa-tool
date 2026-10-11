@@ -48,7 +48,12 @@ def local_model(name, root=None):
 
 
 def process_session(
-    session, model_name="base.en", progress=lambda _: None, factory=local_model, embed_images=None
+    session,
+    model_name="base.en",
+    progress=lambda _: None,
+    factory=local_model,
+    embed_images=None,
+    image_quality=None,
 ):
     session.update(transcription_status="processing", transcription_error=None)
     try:
@@ -92,7 +97,9 @@ def process_session(
         raise
     progress("Writing Markdown…")
     try:
-        return export_markdown(session, embed_images=embed_images)
+        return export_markdown(
+            session, embed_images=embed_images, image_quality=image_quality, progress=progress
+        )
     except Exception as exc:
         session.update(export_status="needs_attention", export_error=str(exc))
         raise

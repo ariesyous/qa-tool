@@ -1,0 +1,275 @@
+import base64
+import io
+import random
+
+import pytest
+from PIL import Image
+
+from qa_narrator import compact
+from qa_narrator.compact import DATA_IMAGE, ExportSizeError, compact_markdown, shrink_markdown
+from qa_narrator.export import export_markdown
+from qa_narrator.storage import Session, atomic_json
+
+
+def data_url(image):
+    output = io.BytesIO()
+    image.save(output, format="PNG")
+    return b"data:image/png;base64," + base64.b64encode(output.getvalue())
+
+
+def noisy_image(width, height):
+    return Image.frombytes("RGB", (width, height), random.Random(42).randbytes(width * height * 3))
+
+
+def decode(content):
+    match = DATA_IMAGE.search(content)
+    image = Image.open(io.BytesIO(base64.b64decode(match.group(2), validate=True)))
+    image.load()
+    return image
+
+
+def test_4k_report_over_30_mb_fits_without_losing_notes_or_source(tmp_path):
+    # High-entropy fixture is harder to compress than a typical application screenshot.
+    original = b"# Notes\r\nCaf\xc3\xa9\r\n![Screenshot 001](" + data_url(noisy_image(3840, 2160))
+    original += b")\r\nManual **feedback** stays here.\r\n"
+    assert len(original) > 30_000_000
+    source = tmp_path / "feedback.md"
+    source.write_bytes(original)
+    output = shrink_markdown(source)
+    result = output.read_bytes()
+    assert len(result) <= compact.COMPACT_TARGET_BYTES < 25_000_000
+    assert DATA_IMAGE.sub(b"IMAGE", result) == DATA_IMAGE.sub(b"IMAGE", original)
+    assert source.read_bytes() == original
+    image = decode(result)
+    assert image.format == "JPEG" and image.size == (2560, 1440)
+    assert output.name == "feedback.compact.md"
+
+
+def test_shrink_never_overwrites_previous_copy(tmp_path):
+    source = tmp_path / "feedback.md"
+    source.write_bytes(b"Notes\n![shot](" + data_url(Image.new("RGB", (10, 10))) + b")")
+    existing = tmp_path / "feedback.compact.md"
+    existing.write_bytes(b"Keep my previous copy")
+    assert shrink_markdown(source).name == "feedback.compact-2.md"
+    assert existing.read_bytes() == b"Keep my previous copy"
+
+
+def test_progressively_compresses_to_exact_budget(monkeypatch):
+    url = data_url(noisy_image(800, 450))
+    content = b"Notes\n![first](" + url + b")\nMore feedback\n![second](" + url + b")"
+    monkeypatch.setattr(compact, "PROFILES", ((800, 90),))
+    first = compact_markdown(content)
+    monkeypatch.setattr(compact, "PROFILES", ((800, 90), (400, 80)))
+    updates = []
+    result = compact_markdown(content, target_bytes=len(first) - 1, progress=updates.append)
+    assert [message for message in updates if message.startswith("Optimizing")] == [
+        f"Optimizing screenshot {shot} of 2 — pass {attempt} of up to 2…"
+        for attempt in (1, 2)
+        for shot in (1, 2)
+    ]
+    assert "Trying more compression" in " ".join(updates)
+    assert updates[-1] == "Assembling compact Markdown…"
+    assert len(result) < len(first)
+    assert len(DATA_IMAGE.findall(result)) == 2
+    assert DATA_IMAGE.sub(b"IMAGE", result) == DATA_IMAGE.sub(b"IMAGE", content)
+    assert decode(result).size == (400, 225)
+    assert compact_markdown(content, target_bytes=len(first)) == first
+
+
+def test_unreachable_budget_keeps_previous_export_and_preferences(tmp_path, monkeypatch):
+    session = make_session(tmp_path)
+    original = export_markdown(session, embed_images=True, image_quality="raw").read_bytes()
+    old_data = dict(session.data)
+    monkeypatch.setattr(
+        "qa_narrator.export.compact_markdown", lambda content, **kw: compact_markdown(content, 1)
+    )
+    with pytest.raises(ExportSizeError, match="text alone"):
+        export_markdown(session, embed_images=True, image_quality="compact")
+    assert (session.folder / "feedback.md").read_bytes() == original
+    assert session.data == old_data
+
+
+def test_quality_floor_fails_without_writing_shrunken_file(tmp_path, monkeypatch):
+    source = tmp_path / "report.md"
+    original = b"![shot](" + data_url(noisy_image(80, 45)) + b")"
+    source.write_bytes(original)
+    with pytest.raises(ExportSizeError, match="quality floor"):
+        compact_markdown(original, target_bytes=100)
+    monkeypatch.setattr(
+        compact,
+        "compact_markdown",
+        lambda content, **kw: (_ for _ in ()).throw(ExportSizeError("too big")),
+    )
+    with pytest.raises(ExportSizeError):
+        shrink_markdown(source)
+    assert list(tmp_path.iterdir()) == [source]
+    assert source.read_bytes() == original
+
+
+def test_transparent_png_stays_transparent_and_small_image_not_upscaled():
+    source = b"![shot](" + data_url(Image.new("RGBA", (20, 10), (255, 0, 0, 50))) + b")"
+    result = compact_markdown(source)
+    image = decode(result)
+    assert image.size == (20, 10) and image.format == "PNG"
+    assert image.getpixel((0, 0)) == (255, 0, 0, 50)
+    assert len(result) <= len(source)
+
+
+@pytest.mark.parametrize("payload", [b"bad", base64.b64encode(b"not an image")])
+def test_bad_image_does_not_create_copy(tmp_path, payload):
+    source = tmp_path / "bad.md"
+    original = b"![shot](data:image/png;base64," + payload + b")"
+    source.write_bytes(original)
+    with pytest.raises(ValueError, match="invalid embedded"):
+        shrink_markdown(source)
+    assert list(tmp_path.iterdir()) == [source]
+    assert source.read_bytes() == original
+
+
+def make_session(tmp_path):
+    session = Session.create(tmp_path / "sessions", 16000, "fixture")
+    session.update(status="stopped", duration=1)
+    noisy_image(800, 450).save(session.folder / "screenshots/001.png")
+    session.event({"kind": "screenshot", "number": 1, "path": "screenshots/001.png", "t": 0})
+    atomic_json(session.folder / "transcription.json", {"segments": []})
+    return session
+
+
+def test_compact_preference_persists_and_raw_restores_exact_png(tmp_path):
+    session = make_session(tmp_path)
+    source = (session.folder / "screenshots/001.png").read_bytes()
+    result = export_markdown(session, embed_images=True, image_quality="compact").read_bytes()
+    assert decode(result).format == "JPEG"
+    reopened = Session.load(session.folder)
+    assert reopened.data["export_image_quality"] == "compact"
+    assert reopened.data["export_size_bytes"] == len(result)
+    assert export_markdown(reopened).read_bytes() == result
+    raw = export_markdown(reopened, image_quality="raw").read_bytes()
+    assert base64.b64decode(DATA_IMAGE.search(raw).group(2)) == source
+    assert (session.folder / "screenshots/001.png").read_bytes() == source
+
+
+def test_cli_compact_export_and_standalone_shrink(tmp_path, monkeypatch, capsys):
+    from qa_narrator.__main__ import main
+
+    session = make_session(tmp_path)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "qa-narrator",
+            "--export",
+            str(session.folder),
+            "--embed-images",
+            "--image-quality",
+            "compact",
+        ],
+    )
+    assert main() == 0
+    assert Session.load(session.folder).data["export_image_quality"] == "compact"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "qa-narrator",
+            "--shrink-markdown",
+            str(session.folder / "feedback.md"),
+        ],
+    )
+    assert main() == 0
+    assert (session.folder / "feedback.compact.md").exists()
+    assert "MB" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "size,expected",
+    [
+        (19_999_999, "20.00 MB"),
+        (20_000_000, "approaching"),
+        (25_000_000, "exceeds"),
+    ],
+)
+def test_size_warning_boundaries(size, expected):
+    assert expected in compact.size_notice(size)
+
+
+def test_process_passes_compact_preference(tmp_path):
+    from types import SimpleNamespace
+
+    from qa_narrator.transcription import process_session
+
+    session = make_session(tmp_path)
+    model = SimpleNamespace(transcribe=lambda *a, **kw: ([], SimpleNamespace(language="en")))
+    updates = []
+    path = process_session(
+        session,
+        factory=lambda _: model,
+        embed_images=True,
+        image_quality="compact",
+        progress=updates.append,
+    )
+    assert decode(path.read_bytes()).format == "JPEG"
+    assert session.data["export_image_quality"] == "compact"
+    assert "Preparing screenshot 1 of 1…" in updates
+    assert any(message.startswith("Optimizing screenshot 1 of 1") for message in updates)
+    assert updates[-1] == "Saving Markdown…"
+
+
+@pytest.mark.parametrize("stage", ["Reading", "Scanning", "Optimizing", "Assembling", "Saving"])
+def test_cancel_keeps_original_and_previous_copy_at_each_stage(tmp_path, stage):
+    from concurrent.futures import CancelledError
+    from threading import Event
+
+    source = tmp_path / "feedback.md"
+    original = b"Manual notes\n![shot](" + data_url(Image.new("RGB", (12, 8))) + b")"
+    source.write_bytes(original)
+    previous = tmp_path / "feedback.compact.md"
+    previous.write_bytes(b"Existing copy with my edits")
+    cancelled = Event()
+
+    def progress(message):
+        if message.startswith(stage):
+            cancelled.set()
+
+    with pytest.raises(CancelledError):
+        shrink_markdown(source, progress=progress, cancelled=cancelled.is_set)
+    assert source.read_bytes() == original
+    assert previous.read_bytes() == b"Existing copy with my edits"
+    assert set(tmp_path.iterdir()) == {source, previous}
+
+
+def test_cancellation_during_image_encode_is_not_reported_as_invalid_image(monkeypatch):
+    from concurrent.futures import CancelledError
+    from threading import Event
+
+    content = b"![shot](" + data_url(Image.new("RGB", (12, 8))) + b")"
+    cancelled = Event()
+    save = Image.Image.save
+
+    def cancel_after_encode(*args, **kwargs):
+        save(*args, **kwargs)
+        cancelled.set()
+
+    monkeypatch.setattr(Image.Image, "save", cancel_after_encode)
+    with pytest.raises(CancelledError):
+        compact_markdown(content, cancelled=cancelled.is_set)
+
+
+def test_cancel_during_save_removes_temporary_file(tmp_path, monkeypatch):
+    from concurrent.futures import CancelledError
+    from threading import Event
+
+    from qa_narrator import storage
+
+    source = tmp_path / "feedback.md"
+    source.write_bytes(b"Feedback with no images")
+    cancelled = Event()
+    fsync = storage.os.fsync
+
+    def cancel_after_flush(fd):
+        fsync(fd)
+        cancelled.set()
+
+    monkeypatch.setattr(storage.os, "fsync", cancel_after_flush)
+    with pytest.raises(CancelledError):
+        shrink_markdown(source, cancelled=cancelled.is_set)
+    assert source.read_bytes() == b"Feedback with no images"
+    assert list(tmp_path.iterdir()) == [source]

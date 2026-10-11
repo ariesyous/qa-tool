@@ -7,6 +7,7 @@ import json
 import re
 from pathlib import PurePosixPath
 
+from .compact import compact_markdown
 from .storage import atomic_bytes
 
 
@@ -80,7 +81,7 @@ def image_source(session, event, embed_images):
     return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
 
 
-def render(session, transcript, embed_images=False):
+def render(session, transcript, embed_images=False, image_quality="raw", progress=lambda _: None):
     shots = sorted(session.screenshots(), key=lambda e: (e["t"], e["sequence"]))
     units = list(text_units(transcript))
     events = [(t, 1, i, (value, accuracy)) for i, (t, value, accuracy) in enumerate(units)]
@@ -99,11 +100,15 @@ def render(session, transcript, embed_images=False):
     ]
     if embed_images:
         lines += [
-            "Images: PNG screenshots are embedded in this file as base64 data URLs; "
+            "Images: screenshots are embedded in this file as PNG/JPEG base64 data URLs; "
             "no screenshot folder is needed to share this report. Some Markdown viewers "
             "do not display data URLs. To inspect images in those viewers or with an agent, "
-            "decode each data:image/png;base64 URL to a PNG file."
+            "decode each data:image/png;base64 or data:image/jpeg;base64 URL to an image file."
         ]
+        if image_quality == "compact":
+            lines += [
+                "Compact export: images may be resized or compressed; original captures are retained."
+            ]
     if any(accuracy == "estimated" for _, _, accuracy in units):
         lines += [
             "Some word boundaries were unavailable; those segment tokens use evenly spaced "
@@ -124,9 +129,12 @@ def render(session, transcript, embed_images=False):
             lines.extend([f"**[{timestamp(pending_time)}]**", "", "".join(pending).strip(), ""])
             pending.clear()
 
+    shot_number = 0
     for when, kind, _, payload in events:
         if kind == 0:
             flush()
+            shot_number += 1
+            progress(f"Preparing screenshot {shot_number} of {len(shots)}…")
             path = image_source(session, payload, embed_images)
             lines += [
                 f"**[{timestamp(when)} — Screenshot]**",
@@ -147,9 +155,16 @@ def render(session, transcript, embed_images=False):
     return "\n".join(lines)
 
 
-def export_markdown(session, overwrite=False, embed_images=None):
+def export_markdown(
+    session, overwrite=False, embed_images=None, image_quality=None, progress=lambda _: None
+):
+    progress("Preparing Markdown…")
     if embed_images is None:
         embed_images = session.data.get("export_embed_images", False)
+    if image_quality is None:
+        image_quality = session.data.get("export_image_quality", "raw")
+    if image_quality not in ("raw", "compact"):
+        raise ValueError("Image quality must be raw or compact")
     transcript = json.loads((session.folder / "transcription.json").read_text(encoding="utf-8"))
     output = session.folder / "feedback.md"
     if output.exists() and not overwrite:
@@ -157,11 +172,23 @@ def export_markdown(session, overwrite=False, embed_images=None):
         current_hash = hashlib.sha256(output.read_bytes()).hexdigest()
         if current_hash != saved_hash:
             raise FileExistsError("feedback.md has manual edits. Confirm replacement or keep it.")
-    content = render(session, transcript, embed_images=embed_images).encode("utf-8")
+    content = render(
+        session,
+        transcript,
+        embed_images=embed_images,
+        image_quality=image_quality,
+        progress=progress,
+    ).encode("utf-8")
+    if embed_images and image_quality == "compact":
+        content = compact_markdown(content, progress=progress)
+    progress("Saving Markdown…")
     atomic_bytes(output, content)
     session.update(
         export_status="complete",
         export_sha256=hashlib.sha256(content).hexdigest(),
         export_embed_images=bool(embed_images),
+        export_image_quality=image_quality,
+        export_size_bytes=len(content),
+        export_error=None,
     )
     return output
