@@ -322,7 +322,9 @@ def test_legacy_settings_add_change_remove_and_reopen(window, monkeypatch, nativ
     reopened = MainWindow()
     try:
         assert reopened._shortcuts() == ["Ctrl+F9", "Ctrl+F10"]
-        assert len(native.registered) == 2
+        assert not native.registered and reopened.start.isEnabled()
+        assert reopened._apply(arm=True) and len(native.registered) == 2
+        reopened._disarm_shortcuts()
         assert reopened._remove_shortcut(1) is None
         assert reopened.settings.value("additional_shortcuts", type=list) == []
         assert reopened._remove_shortcut(0) is not None
@@ -342,13 +344,16 @@ def test_cancel_duplicate_and_conflict_preserve_all_bindings(window, monkeypatch
     assert "Cannot register" in choose(monkeypatch, window, "Ctrl+F10")
     assert window._shortcuts() == ["Ctrl+F9", "Middle Mouse"]
     assert window.settings.value("additional_shortcuts", type=list) == ["Middle Mouse"]
-    assert len(window.hotkey.bindings) == 2 and window.start.isEnabled()
+    assert window.hotkey is None and not native.registered and window.start.isEnabled()
 
 
-def test_standalone_shortcuts_register_save_and_reload(window, monkeypatch, native):
+def test_standalone_shortcuts_register_save_and_reload(app, window, monkeypatch, native):
     assert choose(monkeypatch, window, "`") is None
     assert choose(monkeypatch, window, "Scroll Lock") is None
+    assert not native.registered  # nothing is reserved while idle
+    armed = windows.ScreenshotShortcuts(app, lambda: None, window._shortcuts())
     assert set(native.registered.values()) == {(0x4002, 0x78), (0x4000, 0xC0), (0x4000, 0x91)}
+    armed.close()
     assert "already configured" in choose(monkeypatch, window, "scroll lock")
     assert "already configured" in choose(monkeypatch, window, "`")
     settings_path = window.settings.fileName()
@@ -359,7 +364,9 @@ def test_standalone_shortcuts_register_save_and_reload(window, monkeypatch, nati
     reopened = MainWindow()
     try:
         assert reopened._shortcuts() == ["Ctrl+F9", "`", "Scroll Lock"]
-        assert len(native.registered) == 3
+        assert not native.registered and reopened.start.isEnabled()
+        assert reopened._apply(arm=True) and len(native.registered) == 3
+        reopened._disarm_shortcuts()
     finally:
         reopened.close()
 
@@ -393,4 +400,102 @@ def test_restore_failure_preserves_settings_and_disables_start(window, monkeypat
     assert window.settings.value("shortcut") == "Ctrl+F9"
     native.blocked.clear()
     assert window._apply()
-    assert window.hotkey is not None and window.start.isEnabled()
+    assert window.hotkey is None and window.start.isEnabled()
+
+
+class FakeEngine:
+    fail = False
+
+    def __init__(self, root, device, name, notify):
+        self.session = SimpleNamespace(folder=root, screenshots=lambda: [], data={})
+        self.timeline = SimpleNamespace(state="recording", elapsed=lambda: 0.0)
+
+    def start(self):
+        if FakeEngine.fail:
+            raise OSError("Microphone unavailable")
+        return self
+
+    def pause_resume(self):
+        self.timeline.state = "paused" if self.timeline.state == "recording" else "recording"
+
+    def check_error(self):
+        return None
+
+    def stop(self):
+        return self.session
+
+
+def settle(app, window):
+    import time
+
+    deadline = time.monotonic() + 5
+    while window.busy and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    app.processEvents()
+    assert not window.busy
+
+
+@pytest.fixture
+def recorder(window, monkeypatch):
+    FakeEngine.fail = False
+    monkeypatch.setattr("qa_narrator.ui.CaptureEngine", FakeEngine)
+    monkeypatch.setattr(window, "_process", lambda: None)
+    monkeypatch.setattr(window, "_sessions", lambda *args: None)
+    return window
+
+
+def test_shortcuts_are_reserved_only_while_recording(app, recorder, native):
+    window = recorder
+    assert not native.registered and window.start.isEnabled()
+    window._start()
+    settle(app, window)
+    assert window.engine is not None
+    assert set(native.registered.values()) == {(0x4002, 0x78)}
+    window._pause()  # paused presses are ignored, but the shortcut stays reserved
+    assert window.engine.timeline.state == "paused" and native.registered
+    window._stop()
+    settle(app, window)
+    assert window.engine is None and not native.registered
+    assert window.start.isEnabled()
+
+
+def test_failed_start_releases_shortcuts(app, recorder, native):
+    FakeEngine.fail = True
+    recorder._start()
+    settle(app, recorder)
+    assert recorder.engine is None and not native.registered
+    assert "Microphone unavailable" in recorder.message.text()
+    assert recorder.start.isEnabled()
+
+
+def test_conflict_at_start_keeps_microphone_closed(app, recorder, native, monkeypatch):
+    opened = []
+    monkeypatch.setattr(
+        "qa_narrator.ui.CaptureEngine", lambda *args: opened.append(args) or FakeEngine(*args)
+    )
+    native.blocked.add(windows.parse_hotkey("Ctrl+F9")[1])  # another app claimed it while idle
+    recorder._start()
+    settle(app, recorder)
+    assert not opened and recorder.engine is None and not native.registered
+    assert "Cannot register" in recorder.message.text() and not recorder.start.isEnabled()
+    native.blocked.clear()
+    assert recorder._apply()
+    assert recorder.start.isEnabled() and not native.registered
+
+
+def test_remove_is_saved_even_if_another_app_took_a_remaining_key(window, monkeypatch, native):
+    assert choose(monkeypatch, window, "Ctrl+F10") is None
+    native.blocked.add(windows.parse_hotkey("Ctrl+F9")[1])  # claimed by another app while idle
+    # Removing can't create a conflict, so it is saved; the remaining conflict is reported.
+    assert "Cannot register" in window._remove_shortcut(1)
+    assert window._shortcuts() == ["Ctrl+F9"] and not window.start.isEnabled()
+    assert window.settings.value("additional_shortcuts", type=list) == []
+
+
+def test_apply_button_validates_then_releases(window, native):
+    from PySide6.QtWidgets import QPushButton
+
+    apply = next(b for b in window.findChildren(QPushButton) if b.text() == "Apply Settings")
+    apply.click()
+    assert window.hotkey is None and not native.registered and window.start.isEnabled()

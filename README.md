@@ -49,7 +49,7 @@ and SmartScreen reputation have not been tested.
    in Settings. The taskbar flashes on success without stealing focus or overlaying
    your screenshot.
 4. **Take a breather.** Use **Pause/Resume** when needed. Paused audio is discarded
-   and screenshots are disabled.
+   and screenshot presses are ignored; the shortcut stays reserved until Stop.
 5. **Wrap up and share.** Click **Stop Recording**. Local CPU transcription and
    export run in the background. Use **Open Markdown** or **Open Session Folder**
    to find the result. Share `feedback.md` together with its `screenshots` folder,
@@ -75,6 +75,12 @@ Keep just the default shortcut, or open **Additional shortcuts** to add up to fi
 more (six total). You can change or remove each additional shortcut. All configured
 shortcuts use the same capture settings. Duplicate combinations are rejected, and
 a registration conflict keeps your previous shortcuts.
+
+Keyboard shortcuts are reserved only while a recording is active (Start through
+Stop). Windows delivers a registered shortcut to QA Narrator instead of the focused
+app, so while you are not recording, those keys work normally everywhere else —
+including a standalone backtick. Settings checks each change for conflicts and
+releases it again; Start checks once more before the microphone opens.
 
 The captured shortcut saves immediately. Esc or Cancel keeps your previous shortcut.
 Left and right clicks are not assigned. Mouse shortcuts pass through, so the button
@@ -226,7 +232,10 @@ it does not silently download missing models. Failed inference preserves the ses
 ## Troubleshooting
 
 - **Start disabled:** connect/refresh a microphone and resolve any shortcut registration
-  error in Settings. F12 is reserved by Windows and intentionally rejected.
+  error in Settings. F12 is reserved by Windows and intentionally rejected. Another app
+  can claim a shortcut while QA Narrator is idle; Start then reports the conflict, stays
+  disabled, and does not open the microphone. Close the other app and click **Apply
+  Settings**, or choose another shortcut.
 - **Hotkey conflict:** close the competing app or choose another modifier plus F1–F11,
   letter, or digit. Windows error 5 indicates access denied (including restricted
   sandboxes). Run the app normally on your interactive desktop.
