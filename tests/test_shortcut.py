@@ -118,6 +118,8 @@ def test_picker_saves_immediately_and_restores_previous_on_cancel_or_failure(
         shortcut="Ctrl+Alt+F9",
         additional_shortcuts=["Ctrl+F8"],
         hotkey=old,
+        engine=None,
+        _shortcuts_ready=False,
         _capture=lambda: None,
         _controls=lambda: None,
         _notice=lambda *args: errors.append(args),
@@ -126,7 +128,13 @@ def test_picker_saves_immediately_and_restores_previous_on_cancel_or_failure(
         hint=widget,
         settings=SimpleNamespace(setValue=saved.__setitem__, sync=lambda: None),
     )
-    for name in ("_shortcuts", "_save_shortcuts", "_refresh_shortcuts"):
+    for name in (
+        "_shortcuts",
+        "_save_shortcuts",
+        "_refresh_shortcuts",
+        "_release_shortcuts",
+        "_disarm_shortcuts",
+    ):
         setattr(owner, name, getattr(MainWindow, name).__get__(owner))
     monkeypatch.setattr(
         "qa_narrator.ui.ShortcutDialog",
@@ -142,7 +150,8 @@ def test_picker_saves_immediately_and_restores_previous_on_cancel_or_failure(
     monkeypatch.setattr("qa_narrator.ui.ScreenshotShortcuts", install)
     MainWindow._choose_shortcut(owner)
     expected = choice if choice and not fail else "Ctrl+Alt+F9"
-    assert closed and owner.hotkey is not None
+    # Validated, then released again because no recording is active.
+    assert closed and owner.hotkey is None and owner._shortcuts_ready
     assert owner.shortcut == saved["shortcut"] == expected
     assert attempts[-1] == [expected, "Ctrl+F8"]
     assert saved["additional_shortcuts"] == ["Ctrl+F8"]

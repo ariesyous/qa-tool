@@ -53,6 +53,9 @@ class MainWindow(QMainWindow):
         self.signals.notice.connect(self._notice)
         self.signals.progress.connect(self._progress)
         self.engine, self.session, self.hotkey = None, None, None
+        # Whether the configured shortcuts last registered successfully. Registrations are
+        # only held while recording; see _release_shortcuts.
+        self._shortcuts_ready = False
         self.busy = False
         self._cancel_event = None
         self.root = Path(
@@ -69,6 +72,8 @@ class MainWindow(QMainWindow):
             )
         except Exception as exc:
             self._notice("error", str(exc))
+        # Registering at launch still surfaces conflicts early, but nothing stays registered.
+        self._release_shortcuts()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._tick)
         self.timer.start(200)
@@ -234,7 +239,7 @@ class MainWindow(QMainWindow):
         export_hint.setMinimumHeight(export_hint.fontMetrics().lineSpacing() * 2 + 4)
         form.addRow("", export_hint)
         apply = QPushButton("Apply Settings")
-        apply.clicked.connect(self._apply)
+        apply.clicked.connect(lambda: self._apply())
         form.addRow(apply)
         layout.addWidget(self.options)
         privacy = QLabel(
@@ -313,7 +318,7 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "options"):
             return
         active, idle = self.engine is not None, not self.busy and self.engine is None
-        self.start.setEnabled(idle and self.mics.count() > 0 and self.hotkey is not None)
+        self.start.setEnabled(idle and self.mics.count() > 0 and self._shortcuts_ready)
         self.pause.setEnabled(active and not self.busy)
         self.stop.setEnabled(active and not self.busy)
         for widget in (
@@ -361,19 +366,25 @@ class MainWindow(QMainWindow):
         self._cancel_event = None
         self.cancel_shrink.hide()
         self.activity.hide()
-        if error and failure:
-            failure(error)
-        elif error:
-            self.status.setText(
-                "Needs attention · microphone is off"
-                if not self.engine
-                else "Recording needs attention"
-            )
-            self._notice("error", str(error))
-            if not self.engine:
-                self._sessions(self.session)
-        else:
-            success(result)
+        try:
+            if error and failure:
+                failure(error)
+            elif error:
+                self.status.setText(
+                    "Needs attention · microphone is off"
+                    if not self.engine
+                    else "Recording needs attention"
+                )
+                self._notice("error", str(error))
+                if not self.engine:
+                    self._sessions(self.session)
+            else:
+                success(result)
+        finally:
+            if self.engine is None:
+                # Covers Stop and a failed Start, even if a callback raised:
+                # never leave shortcuts registered while idle.
+                self._disarm_shortcuts()
         self._controls()
 
     def _notice(self, kind, text):
@@ -395,7 +406,8 @@ class MainWindow(QMainWindow):
             self.processing.setText("Cancelling… waiting for the current operation to finish.")
 
     def _start(self):
-        if not self._apply():
+        # Register shortcuts before opening the microphone so a conflict stops Start cleanly.
+        if not self._apply(arm=True):
             return
         device, name = self.mics.currentData(), self.mics.currentText()
         self.settings.setValue("microphone", name)
@@ -604,6 +616,22 @@ class MainWindow(QMainWindow):
     def _shortcuts(self):
         return [self.shortcut, *self.additional_shortcuts]
 
+    def _release_shortcuts(self):
+        """Remember whether the shortcuts registered, then release them unless recording.
+
+        RegisterHotKey reserves a key combination system-wide: the focused app never
+        receives it. Holding registrations while idle would, for example, stop a
+        standalone backtick from typing anywhere for as long as this window is open.
+        """
+        self._shortcuts_ready = self.hotkey is not None
+        if self.engine is None:
+            self._disarm_shortcuts()
+
+    def _disarm_shortcuts(self):
+        if self.hotkey is not None:
+            self.hotkey.close()
+            self.hotkey = None
+
     def _refresh_shortcuts(self):
         self.shortcut_button.setText(f"{self.shortcut}  ·  Change…")
         self.additional_shortcuts_button.setText(
@@ -653,6 +681,7 @@ class MainWindow(QMainWindow):
             self._save_shortcuts(candidate)
         if error:
             self._notice("error", error)
+        self._release_shortcuts()
         self._controls()
         return error
 
@@ -661,25 +690,35 @@ class MainWindow(QMainWindow):
             return "Only additional shortcuts can be removed."
         candidate = self._shortcuts()
         del candidate[index]
+        self._save_shortcuts(candidate)  # Removing cannot add a conflict; always keep it.
+        error = None
         try:
             if self.hotkey:
                 self.hotkey.configure(candidate)
             else:
                 self.hotkey = ScreenshotShortcuts(QApplication.instance(), self._capture, candidate)
         except Exception as exc:
-            self._notice("error", str(exc))
-            return str(exc)
-        self._save_shortcuts(candidate)
+            error = str(exc)  # Another app took a remaining key while idle.
+            self._notice("error", error)
+        self._release_shortcuts()
         self._controls()
+        return error
 
-    def _apply(self):
+    def _apply(self, arm=False):
+        """Save settings and check the shortcuts register.
+
+        With arm=True (Start Recording) the registrations are kept for the session;
+        otherwise they are released again so idle keys keep working in other apps.
+        """
         try:
             root = Path(self.output_text.text()).expanduser().resolve()
             root.mkdir(parents=True, exist_ok=True)
             if self.hotkey is None:
+                self._shortcuts_ready = False
                 self.hotkey = ScreenshotShortcuts(
                     QApplication.instance(), self._capture, self._shortcuts()
                 )
+            self._shortcuts_ready = True
             changed = root != self.root
             self.root = root
             for key, value in (
@@ -693,10 +732,15 @@ class MainWindow(QMainWindow):
             self._refresh_shortcuts()
             if changed:
                 self._sessions()
+            if not arm:
+                self._disarm_shortcuts()
             self._controls()
             return True
         except Exception as exc:
+            if self.engine is None:
+                self._disarm_shortcuts()
             self._notice("error", str(exc))
+            self._controls()
             return False
 
     def _download(self):
