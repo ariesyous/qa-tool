@@ -115,7 +115,8 @@ def render(session, transcript, embed_images=False, image_quality="raw", progres
         ]
         if image_quality == "compact":
             lines += [
-                "Compact export: images may be resized or compressed; original captures are retained."
+                "Compact export: images are preserved when the report fits the size target. "
+                "Oversized reports may be resized or compressed; original captures are retained."
             ]
     if any(accuracy == "estimated" for _, _, accuracy in units):
         lines += [

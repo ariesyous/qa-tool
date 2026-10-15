@@ -230,6 +230,44 @@ def test_ui_retry_reports_success_and_keeps_manual_markdown(window, monkeypatch,
     assert path.read_bytes() == b"My edited report"
 
 
+def test_vocabulary_preference_reopens_and_retry_uses_current_text(window, monkeypatch, tmp_path):
+    from qa_narrator.storage import Session
+    from qa_narrator.transcription import process_session
+
+    window.vocabulary.setText(" AcmeUI,   Save As ")
+    assert window._apply()
+    assert window.settings.value("vocabulary") == "AcmeUI, Save As"
+    window.close()
+    reopened = MainWindow()
+    try:
+        assert reopened.vocabulary.text() == "AcmeUI, Save As"
+        session = Session.create(tmp_path / "vocabulary", 16000, "Fixture")
+        session.update(status="stopped", duration=1)
+        (session.folder / "audio.wav").write_bytes(b"Audio fixture")
+        reopened.session = session
+        options = []
+
+        def transcribe(path, **kwargs):
+            options.append(kwargs)
+            return [], SimpleNamespace(language="en")
+
+        model = SimpleNamespace(transcribe=transcribe)
+        monkeypatch.setattr("qa_narrator.ui.process_session", lambda *args, **kwargs:
+                            process_session(*args, factory=lambda _: model, **kwargs))
+        monkeypatch.setattr(reopened, "_run", lambda work, done, *args, **kwargs: done(work()))
+        monkeypatch.setattr(reopened, "_sessions", lambda *args: None)
+        reopened.vocabulary.setText(" UpdatedProduct,  OAuth ")
+        reopened._process()  # Retry uses the current field even without clicking Apply.
+        assert options[-1]["hotwords"] == "UpdatedProduct, OAuth"
+        assert reopened.settings.value("vocabulary") == "UpdatedProduct, OAuth"
+        reopened.vocabulary.clear()
+        reopened._process()
+        assert options[-1]["hotwords"] is None
+        assert reopened.settings.value("vocabulary") == ""
+    finally:
+        reopened.close()
+
+
 def test_ui_exports_selected_quality_and_shrinks_without_session(window, monkeypatch, tmp_path):
     from qa_narrator.storage import Session, atomic_json
 
@@ -261,6 +299,7 @@ def test_shrink_worker_shows_live_progress_and_clears_activity(
 ):
     import base64
     import io
+    import random
     import threading
     import time
 
@@ -269,7 +308,8 @@ def test_shrink_worker_shows_live_progress_and_clears_activity(
     from qa_narrator import compact
 
     png = io.BytesIO()
-    Image.new("RGB", (12, 8)).save(png, format="PNG")
+    Image.frombytes("RGB", (80, 45), random.Random(42).randbytes(80 * 45 * 3)).save(png, format="PNG")
+    monkeypatch.setattr(compact, "COMPACT_TARGET_BYTES", 10_000)
     source = tmp_path / "feedback.md"
     source.write_bytes(b"![shot](data:image/png;base64," + base64.b64encode(png.getvalue()) + b")")
     monkeypatch.setattr("qa_narrator.ui.QFileDialog.getOpenFileName", lambda *a: (str(source), ""))

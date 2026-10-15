@@ -134,8 +134,10 @@ Export encoding runs in the background so large screenshots do not freeze the UI
 With this option, share **only `feedback.md`**. Choose **Embedded image quality**:
 
 - **Compact — under 25 MB** (the UI default): targets at most **24,000,000 bytes**
-  for the complete Markdown, including text and base64. Images start at a maximum
-  longest edge of 2560 pixels with JPEG quality 90. PNG is retained when smaller;
+  for the complete Markdown, including text and base64. If the report already fits,
+  images keep their original bytes, format, and resolution. Only oversized reports
+  are compressed, starting at a maximum longest edge of 2560 pixels with JPEG
+  quality 90. PNG is retained when smaller;
   transparent images stay PNG. If necessary, the exporter tries lower settings,
   stopping at a longest edge of 1920 pixels and JPEG quality 80. Small images are
   never enlarged. Compression can soften small text; original captures are retained.
@@ -155,6 +157,8 @@ file. This works without the original session and saves `name.compact.md` beside
 (or a numbered copy if that name exists). It compresses embedded PNG/JPEG images,
 preserving all other bytes, including manual notes. The original Markdown stays
 untouched. Linked images are not embedded or resized by this action.
+If the file already fits the 24 MB target, the new copy is byte-for-byte identical,
+and the progress message explains that images were kept unchanged.
 
 During shrinking or compact export, an animated activity bar and status text show
 the current screenshot and compression pass, followed by assembling and saving.
@@ -268,6 +272,27 @@ machine, copy the entire downloaded model directory there. It must include
 Set `QA_NARRATOR_MODEL_DIR` to use another model root (containing `base.en`, etc.).
 Normal inference always loads an existing local directory with local-only loading;
 it does not silently download missing models. Failed inference preserves the session.
+
+### Vocabulary hints
+
+Enter a few product names, UI terms, acronyms, or short phrases in **Settings →
+Vocabulary hints**, for example `QANarrator, AcmeUI, Save As, OAuth`. Apply Settings
+saves the preference; starting a recording or retrying transcription also saves it.
+The current field is used for new transcription and retries. Leave it empty to
+disable hints. Hints guide recognition but do not guarantee a spelling or replace
+reviewing the transcript. They work locally with the existing English CPU models.
+
+The chosen vocabulary is saved in `session.json` and the successful
+`transcription.json`. The CLI reuses the session's saved vocabulary when omitted;
+pass `--vocabulary` to override it, or `--vocabulary=` to clear it:
+
+```powershell
+uv run qa-narrator --process "C:\path\to\session" --vocabulary "QANarrator, AcmeUI, Save As"
+uv run qa-narrator --process "C:\path\to\session" --vocabulary=
+```
+
+Hints apply during recognition. Regenerate Markdown uses the saved transcript;
+use **Recover / Retry Transcription** to apply changed hints to existing audio.
 
 ## Troubleshooting
 

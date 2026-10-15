@@ -221,6 +221,13 @@ class MainWindow(QMainWindow):
         self.download.clicked.connect(self._download)
         row.addWidget(self.download)
         form.addRow("English CPU model", row)
+        self.vocabulary = QLineEdit(self.settings.value("vocabulary", ""))
+        self.vocabulary.setPlaceholderText("Optional: product names, UI terms, acronyms")
+        self.vocabulary.setToolTip(
+            "A few hint words or phrases, separated by commas. Used for new transcription and retries."
+        )
+        self.vocabulary.editingFinished.connect(self._save_vocabulary)
+        form.addRow("Vocabulary hints", self.vocabulary)
         self.embed_images = QCheckBox("Embed screenshots in Markdown (portable)")
         self.embed_images.setChecked(self.settings.value("embed_images", False, type=bool))
         self.embed_images.toggled.connect(self._save_export_preference)
@@ -236,7 +243,7 @@ class MainWindow(QMainWindow):
         self.image_quality.currentIndexChanged.connect(self._save_image_quality)
         form.addRow("Embedded image quality", self.image_quality)
         export_hint = QLabel(
-            "Compact targets 24 MB; original captures are kept.\n"
+            "Compact preserves images when the report fits within 24 MB.\n"
             "For coding agents, leave embedding off and share the screenshots folder."
         )
         export_hint.setWordWrap(True)
@@ -513,6 +520,7 @@ class MainWindow(QMainWindow):
         image_quality = self.image_quality.currentData()
         if not session:
             return
+        vocabulary = self._save_vocabulary()
 
         def work():
             session.recover()
@@ -524,6 +532,7 @@ class MainWindow(QMainWindow):
                 self.signals.progress.emit,
                 embed_images=embed_images,
                 image_quality=image_quality,
+                vocabulary=vocabulary,
             )
 
         self.status.setText("Processing · microphone is off")
@@ -553,6 +562,12 @@ class MainWindow(QMainWindow):
     def _save_image_quality(self, _index):
         self.settings.setValue("image_quality", self.image_quality.currentData())
         self.settings.sync()
+
+    def _save_vocabulary(self):
+        vocabulary = " ".join(self.vocabulary.text().split())
+        self.settings.setValue("vocabulary", vocabulary)
+        self.settings.sync()
+        return vocabulary
 
     def _shrink_markdown(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -759,6 +774,7 @@ class MainWindow(QMainWindow):
                 ("mode", self.mode.currentData()),
                 ("monitor", self.monitors.currentData() or 1),
                 ("model", self.model.currentText()),
+                ("vocabulary", " ".join(self.vocabulary.text().split())),
             ):
                 self.settings.setValue(key, value)
             self.settings.sync()

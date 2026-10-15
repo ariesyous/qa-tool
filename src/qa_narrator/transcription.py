@@ -54,9 +54,16 @@ def process_session(
     factory=local_model,
     embed_images=None,
     image_quality=None,
+    vocabulary=None,
 ):
     """Save the transcript and export, returning None when edited Markdown is kept."""
-    session.update(transcription_status="processing", transcription_error=None)
+    if vocabulary is None:
+        vocabulary = session.data.get("transcription_vocabulary", "")
+    vocabulary = " ".join(vocabulary.split())
+    session.update(
+        transcription_status="processing", transcription_error=None,
+        transcription_vocabulary=vocabulary,
+    )
     try:
         progress("Loading local model…")
         model = factory(model_name)
@@ -68,6 +75,7 @@ def process_session(
             beam_size=5,
             vad_filter=True,
             condition_on_previous_text=False,
+            hotwords=vocabulary or None,
         )
         result = []
         for segment in segments:
@@ -90,7 +98,10 @@ def process_session(
             progress(f"Transcribing… {segment.end:.0f} / {session.data['duration']:.0f} seconds")
         atomic_json(
             session.folder / "transcription.json",
-            {"version": 1, "model": model_name, "language": info.language, "segments": result},
+            {
+                "version": 1, "model": model_name, "language": info.language,
+                "vocabulary": vocabulary, "segments": result,
+            },
         )
         session.update(transcription_status="complete")
     except Exception as exc:

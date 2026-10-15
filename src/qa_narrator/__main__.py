@@ -22,6 +22,10 @@ def main():
         help="Compact targets 24 MB; raw preserves original PNG bytes (embedded exports only)",
     )
     parser.add_argument("--model", default="base.en", choices=("tiny.en", "base.en", "small.en"))
+    parser.add_argument(
+        "--vocabulary", metavar="WORDS",
+        help="Hint words/phrases for --process; omitted reuses saved hints, empty string clears them",
+    )
     images = parser.add_mutually_exclusive_group()
     images.add_argument(
         "--embed-images",
@@ -37,6 +41,8 @@ def main():
         help="Use relative screenshot paths (recommended for coding agents; share screenshots/ too)",
     )
     args = parser.parse_args()
+    if args.vocabulary is not None and not args.process:
+        parser.error("--vocabulary requires --process")
     quality_options = {"image_quality": args.image_quality} if args.image_quality else {}
     if args.shrink_markdown:
         from .compact import shrink_markdown, size_notice
@@ -56,7 +62,8 @@ def main():
         if not (session.folder / "audio.wav").exists():
             session.finalize_audio()
         path = process_session(
-            session, args.model, print, embed_images=args.embed_images, **quality_options
+            session, args.model, print, embed_images=args.embed_images,
+            vocabulary=args.vocabulary, **quality_options
         )
         _print_export(path)
     elif args.export:
