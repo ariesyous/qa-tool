@@ -307,6 +307,12 @@ x64 Redistributable may be needed if an inference DLL cannot load.
 
 ## Build and test
 
+GitHub Actions runs [CI](.github/workflows/ci.yml) on every push and pull request,
+and can also be started manually from the Actions tab. Each run checks Ruff lint
+and the full pytest suite on Windows with Python 3.12 and 3.13, using `uv.lock`.
+Qt tests run offscreen. Microphone, desktop capture, transcription-model, and
+packaged-app smoke checks remain manual; see [VALIDATION.md](VALIDATION.md).
+
 <details>
 <summary>Build commands and packaging notes</summary>
 
