@@ -237,7 +237,7 @@ class MainWindow(QMainWindow):
         form.addRow("Embedded image quality", self.image_quality)
         export_hint = QLabel(
             "Compact targets 24 MB; original captures are kept.\n"
-            "Some viewers require extracting embedded images."
+            "For coding agents, leave embedding off and share the screenshots folder."
         )
         export_hint.setWordWrap(True)
         export_hint.setMinimumHeight(export_hint.fontMetrics().lineSpacing() * 2 + 4)
@@ -259,10 +259,29 @@ class MainWindow(QMainWindow):
         selected = self.mics.currentText() or self.settings.value("microphone", "")
         self.mics.clear()
         try:
+            devices, hosts = sd.query_devices(), sd.query_hostapis()
             default = sd.default.device[0]
-            for index, device in enumerate(sd.query_devices()):
+            wasapi = [
+                i for i, device in enumerate(devices)
+                if device["max_input_channels"] > 0
+                and hosts[device["hostapi"]]["name"] == "Windows WASAPI"
+            ]
+            # Keep the same endpoint when names match across host APIs. MME's
+            # Sound Mapper alias/truncated names may not match; use the WASAPI
+            # default in that case. Saved or currently selected choices win below.
+            if default not in wasapi:
+                matches = [
+                    i for i in wasapi if 0 <= default < len(devices)
+                    and devices[i]["name"].casefold() == devices[default]["name"].casefold()
+                ]
+                preferred = matches[0] if len(matches) == 1 else next((
+                    host["default_input_device"] for host in hosts
+                    if host["name"] == "Windows WASAPI" and host["default_input_device"] in wasapi
+                ), default)
+                default = preferred
+            for index, device in enumerate(devices):
                 if device["max_input_channels"] > 0:
-                    host = sd.query_hostapis(device["hostapi"])["name"]
+                    host = hosts[device["hostapi"]]["name"]
                     self.mics.addItem(f"{device['name']} ({host})", index)
                     if index == default:
                         self.mics.setCurrentIndex(self.mics.count() - 1)
@@ -511,9 +530,18 @@ class MainWindow(QMainWindow):
         self._run(work, self._processed)
 
     def _processed(self, path):
-        self.status.setText("Complete · microphone is off")
+        self.status.setText(
+            "Transcript updated · edited Markdown kept" if path is None
+            else "Complete · microphone is off"
+        )
         self._sessions(self.session)
-        self._export_notice(path)
+        if path is None:
+            self.processing.setText(
+                "Transcript updated; use Regenerate Markdown to replace your edited feedback.md."
+            )
+            self._notice("warning", "Your edited Markdown was kept. The new transcript is saved.")
+        else:
+            self._export_notice(path)
 
     def _export_notice(self, path):
         size = path.stat().st_size

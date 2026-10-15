@@ -206,6 +206,30 @@ def test_native_shortcut_survives_settings_reload_with_readable_label(window, ap
         reopened.close()
 
 
+def test_ui_retry_reports_success_and_keeps_manual_markdown(window, monkeypatch, tmp_path):
+    from qa_narrator.export import export_markdown
+    from qa_narrator.storage import Session, atomic_json
+    from qa_narrator.transcription import process_session
+
+    session = Session.create(tmp_path / "retry", 16000, "Test")
+    session.update(status="stopped", duration=1)
+    (session.folder / "audio.wav").write_bytes(b"audio fixture")
+    atomic_json(session.folder / "transcription.json", {"segments": []})
+    path = export_markdown(session)
+    path.write_bytes(b"My edited report")
+    window.session = session
+    model = SimpleNamespace(transcribe=lambda *args, **kwargs: ([], SimpleNamespace(language="en")))
+    monkeypatch.setattr("qa_narrator.ui.process_session", lambda *args, **kwargs:
+                        process_session(*args, factory=lambda _: model, **kwargs))
+    monkeypatch.setattr(window, "_run", lambda work, done, *args, **kwargs: done(work()))
+    monkeypatch.setattr(window, "_sessions", lambda *args: None)
+    window._process()
+    assert "Transcript updated" in window.status.text()
+    assert "Regenerate Markdown" in window.processing.text()
+    assert "new transcript is saved" in window.message.text()
+    assert path.read_bytes() == b"My edited report"
+
+
 def test_ui_exports_selected_quality_and_shrinks_without_session(window, monkeypatch, tmp_path):
     from qa_narrator.storage import Session, atomic_json
 

@@ -24,6 +24,8 @@ def bare_engine(tmp_path):
     engine.metadata_error = None
     engine.notify = lambda *_: None
     engine.accepting = True
+    engine.input_latency = 0.0
+    engine.last_audio_end = None
     return engine
 
 
@@ -89,6 +91,163 @@ def test_missing_adc_timing_uses_contiguous_samples_despite_callback_jitter(tmp_
     first, second = engine.audio_queue.get_nowait(), engine.audio_queue.get_nowait()
     assert second[0] == first[0] + 100
     assert len(notices) == 1
+
+
+def callback_engine(tmp_path, monkeypatch):
+    import sounddevice as sd
+
+    engine = bare_engine(tmp_path)
+    clock = [100_000_000_000]
+    engine.timeline = Timeline(lambda: clock[0])
+    engine.stream_anchor, engine.clock_anchor = 10.0, clock[0]
+    engine.sd = sd
+    engine.input_latency = 0.2
+    engine.use_adc = None
+    engine.sample_anchor = None
+    engine.captured_frames = 0
+    engine.timing_fallback_reported = False
+    monkeypatch.setattr("qa_narrator.capture.time.perf_counter_ns", lambda: clock[0])
+    return engine, clock, sd
+
+
+@pytest.mark.parametrize("adc", [True, False])
+def test_overflow_continues_with_silence_for_gap_and_persists_warning(tmp_path, monkeypatch, adc):
+    engine, clock, sd = callback_engine(tmp_path, monkeypatch)
+    clock[0] += 200_000_000
+    engine._callback(b"\1\2" * 100, 100, SimpleNamespace(
+        inputBufferAdcTime=10.0 if adc else 0, currentTime=10.2
+    ), sd.CallbackFlags())
+    clock[0] += 400_000_000
+    status = sd.CallbackFlags()
+    status.input_overflow = True
+    engine._callback(b"\3\4" * 100, 100, SimpleNamespace(
+        inputBufferAdcTime=10.4 if adc else 0, currentTime=10.6
+    ), status)
+    assert engine.accepting and engine.errors.empty() and status.input_overflow
+    # The next buffer remains contiguous despite a late callback.
+    clock[0] += 150_000_000
+    engine._callback(b"\5\6" * 100, 100, SimpleNamespace(
+        inputBufferAdcTime=10.5 if adc else 0, currentTime=10.75
+    ), sd.CallbackFlags())
+    engine.audio_queue.put(None)
+    engine._write_audio()
+    assert (engine.session.folder / "audio.pcm").read_bytes() == (
+        b"\1\2" * 100 + b"\0\0" * 300 + b"\3\4" * 100 + b"\5\6" * 100
+    )
+    warnings = [e for e in Session.load(engine.session.folder).data["events"]
+                if e.get("message", "").startswith("Microphone input overflow")]
+    assert len(warnings) == 1
+    assert warnings[0]["audio_gap_seconds"] == pytest.approx(0.3)
+    assert warnings[0]["timing_estimated"] is not adc
+
+
+@pytest.mark.parametrize("latency,expected", [(0.2, 0), (0.05, 100), (0, 100)])
+def test_fallback_compensates_input_latency_without_counting_buffer_twice(
+    tmp_path, monkeypatch, latency, expected
+):
+    engine, clock, sd = callback_engine(tmp_path, monkeypatch)
+    engine.input_latency = latency
+    clock[0] += 200_000_000
+    engine._callback(b"\1\2" * 100, 100, SimpleNamespace(
+        inputBufferAdcTime=0, currentTime=0
+    ), sd.CallbackFlags())
+    assert engine.audio_queue.get_nowait()[0] == expected
+
+
+def test_overflow_with_other_status_still_aborts_and_disconnect_remains_fatal(tmp_path, monkeypatch):
+    engine, clock, sd = callback_engine(tmp_path, monkeypatch)
+    status = sd.CallbackFlags()
+    status.input_overflow = status.input_underflow = True
+    with pytest.raises(sd.CallbackAbort):
+        engine._callback(b"\0\0" * 100, 100, SimpleNamespace(), status)
+    assert not engine.accepting and "Microphone stream error" in engine.check_error()
+    engine.accepting = True
+    engine.stream = SimpleNamespace(active=False)
+    assert "Microphone stopped responding" in engine.check_error()
+
+
+def test_overflow_does_not_hide_a_full_audio_writer_queue(tmp_path, monkeypatch):
+    engine, clock, sd = callback_engine(tmp_path, monkeypatch)
+    engine.audio_queue = queue.Queue(maxsize=1)
+    engine.audio_queue.put((0, b"\0\0"))
+    clock[0] += 200_000_000
+    status = sd.CallbackFlags()
+    status.input_overflow = True
+    with pytest.raises(sd.CallbackAbort):
+        engine._callback(b"\1\2" * 100, 100, SimpleNamespace(
+            inputBufferAdcTime=10.0, currentTime=10.2
+        ), status)
+    assert not engine.accepting and "could not keep up" in engine.check_error()
+
+
+def test_overflow_during_pause_does_not_pad_paused_time(tmp_path, monkeypatch):
+    engine, clock, sd = callback_engine(tmp_path, monkeypatch)
+    engine.input_latency = 0.1
+    clock[0] += 100_000_000
+    timing = SimpleNamespace(inputBufferAdcTime=0, currentTime=0)
+    engine._callback(b"\1\2" * 100, 100, timing, sd.CallbackFlags())
+    engine.pause_resume()  # Pause at 0.1 seconds.
+    clock[0] += 1_000_000_000
+    status = sd.CallbackFlags()
+    status.input_overflow = True
+    engine._callback(b"\3\4" * 100, 100, timing, status)
+    engine.pause_resume()  # Resume at 1.1 seconds.
+    clock[0] += 100_000_000
+    engine._callback(b"\5\6" * 100, 100, timing, sd.CallbackFlags())
+    engine.audio_queue.put(None)
+    engine._write_audio()
+    assert (engine.session.folder / "audio.pcm").read_bytes() == b"\1\2" * 100 + b"\5\6" * 100
+    overflow_event = next(e for e in engine.session.data["events"] if "audio_gap_seconds" in e)
+    assert overflow_event["audio_gap_seconds"] == 0
+
+
+def test_repeated_overflow_never_rewinds_the_sample_clock(tmp_path, monkeypatch):
+    engine, clock, sd = callback_engine(tmp_path, monkeypatch)
+    clock[0] += 200_000_000
+    timing = SimpleNamespace(inputBufferAdcTime=0, currentTime=0)
+    status = sd.CallbackFlags()
+    status.input_overflow = True
+    for _ in range(3):
+        engine._callback(b"\1\2" * 100, 100, timing, status)
+    assert [engine.audio_queue.get_nowait()[0] for _ in range(3)] == [0, 100, 200]
+    assert engine.accepting and engine.errors.empty()
+
+
+@pytest.mark.parametrize("state", ["paused", "stopped"])
+@pytest.mark.parametrize("during_setup", [True, False])
+def test_queued_screenshot_reports_skip_and_releases_slot(
+    tmp_path, monkeypatch, state, during_setup
+):
+    import sys
+
+    engine = bare_engine(tmp_path)
+    engine.timeline = Timeline()
+    engine.screen_pending = threading.BoundedSemaphore(1)
+    engine.screen_pending.acquire()
+    notices = []
+    engine.notify = lambda *args: notices.append(args)
+
+    class Screen:
+        monitors = [{"left": 0, "top": 0, "width": 100, "height": 100}] * 2
+
+        def __enter__(self):
+            engine.timeline.transition(state)
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def grab(self, rect):
+            pytest.fail("Skipped screenshots must not grab pixels")
+
+    monkeypatch.setitem(sys.modules, "mss", SimpleNamespace(mss=Screen))
+    monkeypatch.setattr("qa_narrator.windows.foreground", lambda: (1, 0))
+    if not during_setup:
+        engine.timeline.transition(state)
+    engine._screenshot({"hwnd": 1, "mode": "monitor", "monitor": 1}, engine.timeline.origin)
+    assert notices == [("warning", f"Screenshot skipped: recording {state}.")]
+    assert engine.screen_pending.acquire(blocking=False)
+    assert engine.accepting and not engine.session.screenshots()
 
 
 def test_no_screenshots_outside_active_recording(tmp_path):

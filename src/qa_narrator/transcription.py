@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 
-from .export import export_markdown
+from .export import EditedMarkdownError, export_markdown
 from .storage import atomic_json
 
 MODELS = ("base.en", "tiny.en", "small.en")
@@ -55,6 +55,7 @@ def process_session(
     embed_images=None,
     image_quality=None,
 ):
+    """Save the transcript and export, returning None when edited Markdown is kept."""
     session.update(transcription_status="processing", transcription_error=None)
     try:
         progress("Loading local model…")
@@ -100,6 +101,10 @@ def process_session(
         return export_markdown(
             session, embed_images=embed_images, image_quality=image_quality, progress=progress
         )
+    except EditedMarkdownError:
+        session.update(export_status="manual_edits_kept", export_error=None)
+        progress("Transcript updated; use Regenerate Markdown to replace your edited feedback.md.")
+        return None
     except Exception as exc:
         session.update(export_status="needs_attention", export_error=str(exc))
         raise

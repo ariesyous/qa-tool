@@ -11,6 +11,10 @@ from .compact import compact_markdown
 from .storage import atomic_bytes
 
 
+class EditedMarkdownError(FileExistsError):
+    """An existing report has manual edits that need explicit replacement."""
+
+
 def timestamp(seconds):
     seconds = max(0, int(seconds))
     hours, rest = divmod(seconds, 3600)
@@ -97,12 +101,16 @@ def render(session, transcript, embed_images=False, image_quality="raw", progres
         "",
         "Timing: screenshots use the recorded active-session timeline. Speech timestamps "
         "are model estimates; a screenshot inside a word appears before that word's successor.",
+        "For coding agents, use linked images: share feedback.md together with the screenshots/ "
+        "folder, or zip the session folder. Embedded images can exceed agent text-reading limits "
+        "even with compact export.",
     ]
     if embed_images:
         lines += [
             "Images: screenshots are embedded in this file as PNG/JPEG base64 data URLs; "
             "no screenshot folder is needed to share this report. Some Markdown viewers "
-            "do not display data URLs. To inspect images in those viewers or with an agent, "
+            "do not display data URLs. For coding agents, regenerate with embedding off. "
+            "If only this embedded file is available, "
             "decode each data:image/png;base64 or data:image/jpeg;base64 URL to an image file."
         ]
         if image_quality == "compact":
@@ -171,7 +179,7 @@ def export_markdown(
         saved_hash = session.data.get("export_sha256")
         current_hash = hashlib.sha256(output.read_bytes()).hexdigest()
         if current_hash != saved_hash:
-            raise FileExistsError("feedback.md has manual edits. Confirm replacement or keep it.")
+            raise EditedMarkdownError("feedback.md has manual edits. Confirm replacement or keep it.")
     content = render(
         session,
         transcript,
