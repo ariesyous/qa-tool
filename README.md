@@ -74,6 +74,16 @@ effect, a message explains that the screenshot was skipped.
 
 ## Screenshot shortcuts
 
+To label new screenshots with their app and window title, enable **Settings →
+Screenshot context → Include focused window title and app name**. This is off by
+default: titles can contain private document names, email subjects, or chat names.
+Only the executable name is saved, never its full path. For monitor/all-monitor
+captures (including a monitor fallback), the label says **Focused window**; it
+does not describe every window in the image. Unavailable fields are omitted.
+The preference saves immediately and affects new captures. Turning it off does
+not remove context already saved in session files or exported Markdown; review
+those labels before sharing. Existing sessions without context export as before.
+
 **Your shortcut, your choice.** The screenshot hotkey is configurable and defaults
 to **Ctrl+Alt+F9**. In **Settings → Screenshot shortcut**, record a keyboard
 combination or a **middle / side mouse button** (buttons 4 and 5), optionally with

@@ -1,6 +1,7 @@
 """Native keyboard registration and a pass-through mouse-button hook."""
 
 import ctypes
+import ntpath
 import os
 import re
 import sys
@@ -24,6 +25,7 @@ if sys.platform == "win32":
     dwmapi = ctypes.WinDLL("dwmapi", use_last_error=True)
     user32.GetForegroundWindow.restype = wintypes.HWND
     user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
     user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
     user32.IsWindow.argtypes = [wintypes.HWND]
     user32.IsIconic.argtypes = [wintypes.HWND]
@@ -57,6 +59,13 @@ if sys.platform == "win32":
     kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
     kernel32.GetModuleHandleW.restype = wintypes.HMODULE
     kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD),
+    ]
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     user32.GetMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT]
     user32.GetMessageW.restype = wintypes.BOOL
     user32.PeekMessageW.argtypes = [
@@ -197,6 +206,33 @@ def foreground():
     if hwnd:
         user32.GetWindowThreadProcessId(hwnd, ctypes.byref(process))
     return hwnd, process.value
+
+
+def window_context(hwnd):
+    """Read optional screenshot context; unavailable fields must not prevent capture."""
+    context = {}
+    title = ctypes.create_unicode_buffer(32768)
+    try:
+        if user32.GetWindowTextW(hwnd, title, len(title)):
+            context["title"] = title.value
+    except OSError:
+        pass  # Protected or closing windows can omit either field independently.
+    try:
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value:
+            process = kernel32.OpenProcess(0x1000, False, pid.value)  # Limited query access only.
+            if process:
+                try:
+                    path = ctypes.create_unicode_buffer(32768)
+                    size = wintypes.DWORD(len(path))
+                    if kernel32.QueryFullProcessImageNameW(process, 0, path, ctypes.byref(size)):
+                        context["app"] = ntpath.basename(path.value)
+                finally:
+                    kernel32.CloseHandle(process)
+    except OSError:
+        pass
+    return context
 
 
 def window_rect(hwnd):
@@ -365,8 +401,11 @@ class ScreenshotShortcuts:
         self.bindings.clear()
 
 
-def capture_target(mode, monitor_index):
+def capture_target(mode, monitor_index, include_window_context=False):
     hwnd, pid = foreground()
     if pid == os.getpid():
         raise ValueError("Switch to the application being reviewed before capturing a screenshot")
-    return {"hwnd": hwnd, "mode": mode, "monitor": monitor_index}
+    return {
+        "hwnd": hwnd, "mode": mode, "monitor": monitor_index,
+        "include_window_context": include_window_context,
+    }

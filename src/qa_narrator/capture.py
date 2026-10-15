@@ -244,7 +244,7 @@ class CaptureEngine:
             import mss
             from PIL import Image
 
-            from .windows import foreground, window_rect
+            from .windows import foreground, window_context, window_rect
 
             if self.timeline.state != "recording" or not self.accepting:
                 self._screenshot_skipped()
@@ -280,6 +280,9 @@ class CaptureEngine:
                         rect, fallback = monitors[index], str(exc)
                 else:
                     rect = monitors[0 if mode == "desktop" else index]
+                context = {}
+                if target.get("include_window_context"):
+                    context = window_context(target["hwnd"])
                 if foreground()[0] != target["hwnd"]:
                     raise ValueError(
                         "Active window changed before capture; press the shortcut again"
@@ -315,6 +318,8 @@ class CaptureEngine:
                 "bounds": rect,
                 "fallback": fallback,
             }
+            if context:
+                event["window_context"] = context
             # Timing first, then PNG, then session index. Recovery rejoins completed pairs.
             atomic_json(self.session.folder / f"screenshots/{number:03d}.json", event)
             atomic_bytes(self.session.folder / path, payload)

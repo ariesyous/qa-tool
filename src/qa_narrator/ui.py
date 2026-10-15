@@ -194,6 +194,15 @@ class MainWindow(QMainWindow):
             self.mode.addItem(text, value)
         self.mode.setCurrentIndex(max(0, self.mode.findData(self.settings.value("mode", "window"))))
         form.addRow("Capture", self.mode)
+        self.window_context = QCheckBox("Include focused window title and app name")
+        self.window_context.setChecked(self.settings.value("window_context", False, type=bool))
+        self.window_context.setToolTip(
+            "Off by default. Titles can contain private document, email, or chat names. "
+            "When enabled, they are saved with new screenshots and included in Markdown. "
+            "For monitor captures, this describes only the focused window."
+        )
+        self.window_context.toggled.connect(self._save_window_context)
+        form.addRow("Screenshot context", self.window_context)
         self.monitors = QComboBox()
         try:
             import mss
@@ -483,7 +492,10 @@ class MainWindow(QMainWindow):
         if self.engine and not self.busy and self.engine.timeline.state == "recording":
             try:
                 self.engine.capture(
-                    capture_target(self.mode.currentData(), self.monitors.currentData())
+                    capture_target(
+                        self.mode.currentData(), self.monitors.currentData(),
+                        include_window_context=self.window_context.isChecked(),
+                    )
                 )
             except Exception as exc:
                 self._notice("error", str(exc))
@@ -568,6 +580,10 @@ class MainWindow(QMainWindow):
         self.settings.setValue("vocabulary", vocabulary)
         self.settings.sync()
         return vocabulary
+
+    def _save_window_context(self, enabled):
+        self.settings.setValue("window_context", enabled)
+        self.settings.sync()
 
     def _shrink_markdown(self):
         path, _ = QFileDialog.getOpenFileName(

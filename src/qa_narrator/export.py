@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+import html
 import io
 import json
 import re
@@ -85,6 +86,22 @@ def image_source(session, event, embed_images):
     return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
 
 
+def screenshot_context(event):
+    context = event.get("window_context", {})
+
+    def escape(value):
+        text = " ".join(value.split())
+        text = "".join(c for c in text if ord(c) >= 32 and ord(c) != 127)
+        return re.sub(r"([\\`*_{}\[\]()#+.!|~\-])", r"\\\1", html.escape(text, quote=False))
+
+    fields = [escape(context.get(key, "")) for key in ("app", "title")]
+    details = " — ".join(field for field in fields if field)
+    if not details:
+        return ""
+    label = "Focused window: " if event.get("mode") != "window" or event.get("fallback") else ""
+    return " · " + label + details
+
+
 def render(session, transcript, embed_images=False, image_quality="raw", progress=lambda _: None):
     shots = sorted(session.screenshots(), key=lambda e: (e["t"], e["sequence"]))
     units = list(text_units(transcript))
@@ -146,7 +163,7 @@ def render(session, transcript, embed_images=False, image_quality="raw", progres
             progress(f"Preparing screenshot {shot_number} of {len(shots)}…")
             path = image_source(session, payload, embed_images)
             lines += [
-                f"**[{timestamp(when)} — Screenshot]**",
+                f"**[{timestamp(when)} — Screenshot{screenshot_context(payload)}]**",
                 "",
                 f"![Screenshot {payload['number']:03d}]({path})",
                 "",
