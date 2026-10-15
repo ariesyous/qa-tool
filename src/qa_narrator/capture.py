@@ -23,6 +23,8 @@ class CaptureEngine:
         self.errors = queue.SimpleQueue()
         self.warnings = queue.SimpleQueue()
         self.writer_error = None
+        self.metadata_pending = threading.Event()
+        self.metadata_error = None
         self.timeline = None
         self.stream = None
         self.accepting = False
@@ -122,7 +124,14 @@ class CaptureEngine:
             with (self.session.folder / "audio.pcm").open("wb", buffering=0) as output:
                 position, flushed = 0, time.monotonic()
                 while True:
-                    item = self.audio_queue.get()
+                    try:
+                        item = self.audio_queue.get(timeout=0.2)
+                    except queue.Empty:
+                        if time.monotonic() - flushed >= 1:
+                            os.fsync(output.fileno())
+                            self._persist_metadata()
+                            flushed = time.monotonic()
+                        continue
                     if item is None:
                         break
                     dest, data = item
@@ -136,22 +145,51 @@ class CaptureEngine:
                     data = data[max(0, position - dest) * 2 :]
                     output.write(data)
                     position += len(data) // 2
-                    while not self.warnings.empty():
-                        self.session.event(self.warnings.get_nowait())
                     if time.monotonic() - flushed >= 1:
                         os.fsync(output.fileno())
+                        self._persist_metadata()
                         flushed = time.monotonic()
                 os.fsync(output.fileno())
         except Exception as exc:
             self.writer_error = exc
             self.errors.put(f"Could not persist microphone audio: {exc}")
             self.accepting = False
+        # Metadata failures must never be classified as PCM write failures. Failed
+        # saves leave events in memory, so retry saving rather than appending again.
+        self._persist_metadata()
+
+    def _persist_metadata(self):
+        while not self.warnings.empty():
+            self.session.event(self.warnings.get_nowait(), persist=False)
+            self.metadata_pending.set()
+        if not self.metadata_pending.is_set():
+            return
+        # Clear before saving so a concurrent pause cannot lose its pending save.
+        self.metadata_pending.clear()
+        try:
+            self.session.save()
+        except OSError as exc:
+            self.metadata_pending.set()
+            if self.metadata_error is None:
+                self.notify(
+                    "warning",
+                    f"Could not save session metadata: {exc}. "
+                    + (
+                        "Audio capture continues; retrying."
+                        if self.accepting
+                        else "Saved audio is retained; metadata still needs saving."
+                    ),
+                )
+            self.metadata_error = exc
+        else:
+            self.metadata_error = None
 
     def pause_resume(self):
         state = "paused" if self.timeline.state == "recording" else "recording"
         event = self.timeline.transition(state)
-        self.session.event(event)
-        self.session.update(status=state)
+        self.session.event(event, persist=False)
+        self.session.update(status=state, persist=False)
+        self.metadata_pending.set()
 
     def capture(self, target):
         if not self.accepting or self.timeline.state != "recording":
@@ -283,11 +321,17 @@ class CaptureEngine:
                     except queue.Full:
                         continue
                 self.writer.join()
-        self.session.event(event)
-        self.session.finalize_audio(event["t"])
-        self.session.update(status="stopped")
+        self.session.event(event, persist=False)
+        self.session.finalize_audio(event["t"], persist=False)
+        self.session.update(status="stopped", persist=False)
+        self.metadata_pending.set()
+        self._persist_metadata()
         if self.writer_error:
             raise OSError(f"Audio write failed; saved portion retained: {self.writer_error}")
         if stop_error:
             raise OSError(f"Microphone failed while stopping; saved audio retained: {stop_error}")
+        if self.metadata_error:
+            raise OSError(
+                f"Audio saved, but session metadata could not be saved: {self.metadata_error}"
+            )
         return self.session

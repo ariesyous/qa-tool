@@ -67,9 +67,12 @@ to **Ctrl+Alt+F9**. In **Settings → Screenshot shortcut**, record a keyboard
 combination or a **middle / side mouse button** (buttons 4 and 5), optionally with
 Ctrl/Alt/Shift/Win.
 
-**Backtick (\`) and Scroll Lock** can also be used on their own, without modifiers.
-Record either key in the picker to use it as your main shortcut or an additional one.
-Backtick uses the US-layout backtick/tilde key.
+**Backtick (\`), punctuation keys, and Scroll Lock** can also be used on their own,
+without modifiers. Record a key in the picker to use it as your main shortcut or an
+additional one. The picker remembers the Windows key code of the key you pressed,
+including on non-US layouts, and accepts Shift+backtick (tilde). Previously saved
+backtick shortcuts keep their original US-key mapping; record the shortcut again
+to use your layout's key.
 
 Keep just the default shortcut, or open **Additional shortcuts** to add up to five
 more (six total). You can change or remove each additional shortcut. All configured
@@ -85,6 +88,8 @@ releases it again; Start checks once more before the microphone opens.
 The captured shortcut saves immediately. Esc or Cancel keeps your previous shortcut.
 Left and right clicks are not assigned. Mouse shortcuts pass through, so the button
 also retains its normal behavior in the reviewed app.
+All mouse bindings share one hook on a dedicated message thread so GUI or disk
+stalls do not block the hook's message loop.
 
 ![Screenshot shortcut picker explaining keyboard and mouse shortcuts](docs/screenshots/shortcut-picker.png)
 
@@ -193,6 +198,10 @@ incrementally and requests a disk flush approximately every second during captur
 Audio is converted to WAV on Stop. Keep `audio.pcm` until you no longer need crash
 recovery; both files are retained deliberately, roughly doubling audio storage.
 Metadata and PNGs use flushed temporary files plus atomic replacement.
+Warnings and pause/resume metadata are retained in memory and saved by the writer
+approximately once a second, including while paused. A failed metadata save reports
+a warning and is retried without stopping audio capture. Stop finalizes the WAV
+before reporting any metadata save failure that remains.
 Power loss can still lose recent buffers or writes held by storage hardware.
 
 On restart, choose an incomplete session and click **Recover / Retry Transcription**.

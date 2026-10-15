@@ -3,6 +3,7 @@
 import json
 import os
 import threading
+import time
 import uuid
 import wave
 from datetime import datetime
@@ -17,8 +18,17 @@ def atomic_bytes(path, data, before_replace=lambda: None):
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        before_replace()
-        os.replace(tmp, path)
+        # Antivirus and sync clients can briefly deny replacement on Windows.
+        for attempt, delay in enumerate((0, 0.02, 0.05, 0.1)):
+            if delay:
+                time.sleep(delay)
+            before_replace()
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if attempt == 3:
+                    raise
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -81,22 +91,24 @@ class Session:
         with self.lock:
             atomic_json(self.folder / "session.json", self.data)
 
-    def update(self, **fields):
+    def update(self, *, persist=True, **fields):
         with self.lock:
             self.data.update(fields)
-            self.save()
+            if persist:
+                self.save()
 
-    def event(self, event):
+    def event(self, event, *, persist=True):
         with self.lock:
             event = dict(event, sequence=len(self.data["events"]))
             self.data["events"].append(event)
-            self.save()
+            if persist:
+                self.save()
 
     def screenshots(self):
         with self.lock:
             return [dict(e) for e in self.data["events"] if e["kind"] == "screenshot"]
 
-    def finalize_audio(self, duration=None):
+    def finalize_audio(self, duration=None, *, persist=True):
         pcm = self.folder / "audio.pcm"
         if not pcm.exists():
             raise ValueError("This session has no recoverable audio.pcm")
@@ -127,7 +139,7 @@ class Session:
         with tmp.open("rb+") as handle:
             os.fsync(handle.fileno())
         os.replace(tmp, self.folder / "audio.wav")
-        self.update(duration=target_frames / rate)
+        self.update(duration=target_frames / rate, persist=persist)
 
     def recover(self):
         if self.data["status"] in ("recording", "paused", "stopping", "capture_error"):

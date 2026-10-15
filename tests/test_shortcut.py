@@ -9,7 +9,12 @@ from PySide6.QtGui import QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import QApplication, QDialog
 
 from qa_narrator.shortcut import ShortcutDialog
-from qa_narrator.windows import mouse_message_matches, parse_mouse_shortcut
+from qa_narrator.windows import (
+    mouse_message_matches,
+    parse_hotkey,
+    parse_mouse_shortcut,
+    shortcut_label,
+)
 
 
 @pytest.fixture(scope="module")
@@ -42,6 +47,35 @@ def test_picker_records_key_combination(app):
     event = QKeyEvent(QEvent.KeyPress, Qt.Key_F9, Qt.ControlModifier | Qt.AltModifier)
     assert dialog.eventFilter(dialog, event)
     assert dialog.shortcut == "Ctrl+Alt+F9"
+
+
+@pytest.mark.parametrize("key,native,text,modifiers,label", [
+    (Qt.Key_QuoteLeft, 0xDF, "`", Qt.NoModifier, "`"),
+    (Qt.Key_AsciiTilde, 0xC0, "~", Qt.ShiftModifier, "Shift+~"),
+    (Qt.Key_Odiaeresis, 0xC0, "ö", Qt.NoModifier, "ö"),
+    (Qt.Key_QuoteLeft, 0x37, "`", Qt.ControlModifier | Qt.AltModifier, "Ctrl+Alt+`"),
+    (Qt.Key_A, 0x51, "a", Qt.ControlModifier, "Ctrl+A"),
+])
+def test_picker_preserves_native_key_instead_of_reconstructing_from_character(
+    app, key, native, text, modifiers, label
+):
+    dialog = ShortcutDialog()
+    dialog.show()
+    event = QKeyEvent(QEvent.KeyPress, key, modifiers, 0, native, 0, text)
+    assert dialog.eventFilter(dialog, event)
+    assert dialog.shortcut == f"{label} [VK:0x{native:02X}]"
+    assert parse_hotkey(dialog.shortcut)[1] == native
+    assert shortcut_label(dialog.shortcut) == label
+    assert dialog.result() == QDialog.Accepted
+
+
+def test_native_shortcuts_validate_duplicates_and_reject_reserved_keys():
+    from qa_narrator.windows import validate_shortcuts
+
+    with pytest.raises(ValueError, match="already configured"):
+        validate_shortcuts(["`", "ö [VK:0xC0]"])
+    with pytest.raises(ValueError):
+        parse_hotkey("Ctrl+F12 [VK:0x7B]")
 
 
 @pytest.mark.parametrize("key,name", [(Qt.Key_QuoteLeft, "`"), (Qt.Key_ScrollLock, "Scroll Lock")])

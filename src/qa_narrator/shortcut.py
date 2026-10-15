@@ -3,7 +3,13 @@
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtWidgets import QApplication, QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
-from .windows import MAX_ADDITIONAL_SHORTCUTS, parse_hotkey, parse_mouse_shortcut
+from .windows import (
+    MAX_ADDITIONAL_SHORTCUTS,
+    OEM_KEYS,
+    parse_hotkey,
+    parse_mouse_shortcut,
+    shortcut_label,
+)
 
 
 def modifier_names(modifiers):
@@ -61,7 +67,7 @@ class AdditionalShortcutsDialog(QDialog):
             change.setVisible(present)
             remove.setVisible(present)
             if present:
-                change.setText(f"{shortcuts[index]}  ·  Change…")
+                change.setText(f"{shortcut_label(shortcuts[index])}  ·  Change…")
         self.add.setEnabled(len(shortcuts) < MAX_ADDITIONAL_SHORTCUTS)
         self.add.setText(f"Add shortcut… ({len(shortcuts)}/{MAX_ADDITIONAL_SHORTCUTS})")
 
@@ -88,7 +94,7 @@ class ShortcutDialog(QDialog):
         layout.addWidget(self.prompt)
         hint = QLabel(
             "Keyboard: Ctrl, Alt, or Win + F1–F11, A–Z, or 0–9.\n"
-            "Backtick (`) and Scroll Lock also work without modifiers.\n"
+            "Backtick (`), punctuation keys, and Scroll Lock also work without modifiers.\n"
             "Mouse: middle, button 4, or button 5; modifiers are optional.\n"
             "Mouse buttons keep their normal behavior in other apps.\n"
             "Press Esc to cancel. Left and right click are not assigned."
@@ -132,8 +138,14 @@ class ShortcutDialog(QDialog):
                 name = chr(key)
             elif key == Qt.Key_QuoteLeft:
                 name = "`"
+            elif key == Qt.Key_AsciiTilde:
+                name = "~"
             elif key == Qt.Key_ScrollLock:
                 name = "Scroll Lock"
+            elif event.nativeVirtualKey() in OEM_KEYS:
+                name = event.text().strip() or "Punctuation key"
+                if "+" in name:
+                    name = "Plus"
             else:
                 self.prompt.setText(
                     "Use Ctrl, Alt, or Win with F1–F11, A–Z, or 0–9; "
@@ -141,7 +153,10 @@ class ShortcutDialog(QDialog):
                     "or a middle/side mouse button."
                 )
                 return True
-            self._select("+".join(modifier_names(event.modifiers()) + [name]))
+            shortcut = "+".join(modifier_names(event.modifiers()) + [name])
+            if event.nativeVirtualKey():
+                shortcut += f" [VK:0x{event.nativeVirtualKey():02X}]"
+            self._select(shortcut)
             return True
         if event.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonDblClick):
             name = {

@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 from qa_narrator.export import export_markdown, render, text_units
-from qa_narrator.storage import Session, atomic_json, list_sessions
+from qa_narrator.storage import Session, atomic_bytes, atomic_json, list_sessions
 from qa_narrator.timeline import Timeline
 from qa_narrator.transcription import process_session
 
@@ -165,6 +165,63 @@ def test_atomic_persistence_and_unique_session_folders(tmp_path):
     assert [e["sequence"] for e in loaded.data["events"]] == list(range(20))
     assert len(list_sessions(tmp_path)) == 2
     assert not list(session.folder.glob("*.tmp-*"))
+
+
+@pytest.mark.parametrize("failures", [2, 4])
+def test_atomic_replace_retries_transient_permission_errors_and_preserves_old_file(
+    tmp_path, monkeypatch, failures
+):
+    from qa_narrator import storage
+
+    target = tmp_path / "session.json"
+    target.write_bytes(b"old")
+    replace = storage.os.replace
+    attempts, delays = [], []
+
+    def locked(source, destination):
+        attempts.append(True)
+        if len(attempts) <= failures:
+            raise PermissionError("File locked")
+        replace(source, destination)
+
+    monkeypatch.setattr(storage.os, "replace", locked)
+    monkeypatch.setattr(storage.time, "sleep", delays.append)
+    if failures == 4:
+        with pytest.raises(PermissionError):
+            atomic_bytes(target, b"new")
+        assert target.read_bytes() == b"old"
+        assert len(attempts) == 4
+    else:
+        atomic_bytes(target, b"new")
+        assert target.read_bytes() == b"new"
+        assert len(attempts) == 3
+    assert len(delays) == len(attempts) - 1
+    assert list(tmp_path.iterdir()) == [target]
+
+
+def test_atomic_replace_checks_cancellation_between_retries(tmp_path, monkeypatch):
+    from concurrent.futures import CancelledError
+
+    from qa_narrator import storage
+
+    target = tmp_path / "feedback.md"
+    target.write_bytes(b"old")
+    attempts = []
+
+    def locked(*args):
+        attempts.append(True)
+        raise PermissionError("File locked")
+
+    def check_cancelled():
+        if attempts:
+            raise CancelledError()
+
+    monkeypatch.setattr(storage.os, "replace", locked)
+    monkeypatch.setattr(storage.time, "sleep", lambda _: None)
+    with pytest.raises(CancelledError):
+        atomic_bytes(target, b"new", before_replace=check_cancelled)
+    assert len(attempts) == 1 and target.read_bytes() == b"old"
+    assert list(tmp_path.iterdir()) == [target]
 
 
 def test_recovery_of_pcm_partial_sample_orphan_png_and_processing(tmp_path):
