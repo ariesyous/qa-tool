@@ -2,12 +2,22 @@
 
 import ctypes
 import os
+import re
 import sys
+import threading
 from ctypes import wintypes
 
 MOUSE_BUTTONS = {"MIDDLE MOUSE": 0x207, "MOUSE BUTTON 4": 1, "MOUSE BUTTON 5": 2}
 MAX_ADDITIONAL_SHORTCUTS = 5
 _hotkey_ids = set()
+_mouse_worker = None
+OEM_KEYS = {0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF, 0xC0, 0xDB, 0xDC, 0xDD, 0xDE, 0xDF, 0xE2}
+NATIVE_KEY = re.compile(r" \[VK:0x([0-9a-f]{2})\]$", re.IGNORECASE)
+
+
+def shortcut_label(text):
+    return NATIVE_KEY.sub("", text)
+
 
 if sys.platform == "win32":
     user32 = ctypes.WinDLL("user32", use_last_error=True)
@@ -46,6 +56,15 @@ if sys.platform == "win32":
     kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
     kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
     kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+    kernel32.GetCurrentThreadId.restype = wintypes.DWORD
+    user32.GetMessageW.argtypes = [ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT]
+    user32.GetMessageW.restype = wintypes.BOOL
+    user32.PeekMessageW.argtypes = [
+        ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT, wintypes.UINT,
+    ]
+    user32.PeekMessageW.restype = wintypes.BOOL
+    user32.PostThreadMessageW.argtypes = [wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+    user32.PostThreadMessageW.restype = wintypes.BOOL
 
 
 class MouseEvent(ctypes.Structure):
@@ -74,34 +93,96 @@ def mouse_message_matches(button, message, mouse_data):
     return message == 0x20B and (mouse_data >> 16) == MOUSE_BUTTONS[button]
 
 
-class MouseHook:
-    def __init__(self, modifiers, button, notify):
-        self.handle = None
+class _MouseHookThread:
+    """One native hook and message loop, independent of Qt and disk operations."""
 
+    def __init__(self):
+        self.handle = None
+        self.bindings = {}
+        self.lock = threading.Lock()
+        self.ready = threading.Event()
+        self.error = None
+        self.thread = threading.Thread(target=self._run, name="mouse-shortcuts", daemon=True)
+        self.thread.start()
+        self.ready.wait()
+        if self.error:
+            self.thread.join()
+            raise self.error
+
+    def _run(self):
         @MouseProc
         def procedure(code, message, data):
             if code >= 0 and message in (0x207, 0x20B):
                 event = ctypes.cast(data, ctypes.POINTER(MouseEvent)).contents
-                if mouse_message_matches(button, message, event.mouseData):
-                    mask = 0
-                    for flag, keys in ((2, (0x11,)), (1, (0x12,)), (4, (0x10,)), (8, (0x5B, 0x5C))):
-                        if any(user32.GetAsyncKeyState(key) & 0x8000 for key in keys):
-                            mask |= flag
-                    if mask == modifiers:
+                mask = 0
+                for flag, keys in ((2, (0x11,)), (1, (0x12,)), (4, (0x10,)), (8, (0x5B, 0x5C))):
+                    if any(user32.GetAsyncKeyState(key) & 0x8000 for key in keys):
+                        mask |= flag
+                with self.lock:
+                    bindings = tuple(self.bindings.values())
+                for modifiers, button, notify in bindings:
+                    if mask == modifiers and mouse_message_matches(button, message, event.mouseData):
                         notify()  # Only queues a Qt signal; never capture or write files here.
             return user32.CallNextHookEx(self.handle, code, message, data)
 
         self.procedure = procedure  # Keep the ctypes callback alive until unhooked.
-        self.handle = user32.SetWindowsHookExW(14, procedure, kernel32.GetModuleHandleW(None), 0)
-        if not self.handle:
-            raise OSError(
-                f"Cannot register mouse shortcut (Windows error {ctypes.get_last_error()})"
-            )
+        try:
+            self.thread_id = kernel32.GetCurrentThreadId()
+            msg = wintypes.MSG()
+            # Create the message queue before the owner can post WM_QUIT.
+            user32.PeekMessageW(ctypes.byref(msg), None, 0, 0, 0)
+            self.handle = user32.SetWindowsHookExW(14, procedure, kernel32.GetModuleHandleW(None), 0)
+            if not self.handle:
+                raise OSError(
+                    f"Cannot register mouse shortcut (Windows error {ctypes.get_last_error()})"
+                )
+            self.ready.set()
+            while True:
+                result = user32.GetMessageW(ctypes.byref(msg), None, 0, 0)
+                if result == -1:
+                    raise ctypes.WinError(ctypes.get_last_error())
+                if result == 0:
+                    break
+        except Exception as exc:
+            self.error = exc
+        finally:
+            if self.handle:
+                user32.UnhookWindowsHookEx(self.handle)
+                self.handle = None
+            self.ready.set()
 
     def close(self):
-        if self.handle:
-            user32.UnhookWindowsHookEx(self.handle)
-            self.handle = None
+        if self.thread.is_alive():
+            if not user32.PostThreadMessageW(self.thread_id, 0x12, 0, 0):  # WM_QUIT
+                raise ctypes.WinError(ctypes.get_last_error())
+            self.thread.join(timeout=5)
+            if self.thread.is_alive():
+                raise OSError("Mouse shortcut thread did not stop")
+
+
+class MouseHook:
+    """A subscription to the shared mouse hook; accessed by the Qt owner thread."""
+
+    def __init__(self, modifiers, button, notify):
+        global _mouse_worker
+        if _mouse_worker is None:
+            _mouse_worker = _MouseHookThread()
+        self.worker = _mouse_worker
+        with self.worker.lock:
+            self.worker.bindings[self] = (modifiers, button, notify)
+
+    @property
+    def procedure(self):
+        return self.worker.procedure
+
+    def close(self):
+        global _mouse_worker
+        with self.worker.lock:
+            self.worker.bindings.pop(self, None)
+            empty = not self.worker.bindings
+        if empty and _mouse_worker is self.worker:
+            self.worker.close()
+            _mouse_worker = None
 
 
 def enable_dpi_awareness():
@@ -136,15 +217,19 @@ def window_rect(hwnd):
 
 
 def parse_hotkey(text):
-    parts = [part.strip().upper() for part in text.split("+")]
+    native = NATIVE_KEY.search(text)
+    parts = [part.strip().upper() for part in shortcut_label(text).split("+")]
     keys = {
         **{f"F{i}": 0x6F + i for i in range(1, 12)},
         **{c: ord(c) for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"},
         "`": 0xC0,  # VK_OEM_3: backtick on the US keyboard layout.
+        "~": 0xC0,
         "SCROLL LOCK": 0x91,  # VK_SCROLL
     }
     modifiers = {"CTRL": 2, "ALT": 1, "SHIFT": 4, "WIN": 8}
-    if parts[-1] not in keys or len(set(parts)) != len(parts):
+    key = int(native.group(1), 16) if native else keys.get(parts[-1])
+    allowed_keys = set(keys.values()) | OEM_KEYS
+    if key not in allowed_keys or len(set(parts)) != len(parts):
         raise ValueError(
             "Use Ctrl, Alt, or Win plus F1–F11, A–Z, or 0–9; "
             "or backtick (`) / Scroll Lock with optional modifiers. F12 is reserved."
@@ -154,9 +239,9 @@ def parse_hotkey(text):
         if part not in modifiers:
             raise ValueError(f"Unknown shortcut modifier: {part}")
         mask |= modifiers[part]
-    if parts[-1] not in ("`", "SCROLL LOCK") and not (mask & (1 | 2 | 8)):
+    if key not in OEM_KEYS | {0x91} and parts[-1] not in ("`", "~") and not (mask & (1 | 2 | 8)):
         raise ValueError("Include Ctrl, Alt, or Win, or use backtick (`) / Scroll Lock on its own")
-    return mask, keys[parts[-1]]
+    return mask, key
 
 
 def install_hotkey(app, callback, shortcut):
@@ -197,7 +282,7 @@ def install_hotkey(app, callback, shortcut):
                     if code == 5
                     else "another application may use it"
                 )
-                raise OSError(f"Cannot register {text}; {reason} (Windows error {code}).")
+                raise OSError(f"Cannot register {shortcut_label(text)}; {reason} (Windows error {code}).")
             _hotkey_ids.add(candidate)
             if self.registered:
                 user32.UnregisterHotKey(None, self.key_id)
@@ -245,7 +330,7 @@ def validate_shortcuts(shortcuts):
         mouse = parse_mouse_shortcut(text)
         binding = ("mouse", *mouse) if mouse else ("keyboard", *parse_hotkey(text))
         if binding in bindings:
-            raise ValueError(f"{text} is already configured as a screenshot shortcut.")
+            raise ValueError(f"{shortcut_label(text)} is already configured as a screenshot shortcut.")
         bindings.append(binding)
     return bindings
 

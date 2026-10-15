@@ -1,5 +1,32 @@
 # Validation record
 
+## Recording reliability and shortcut fixes
+
+On October 15, 2026, regression checks cover issues #7, #1, #2, and the saved-monitor
+launch crash from #9. All **120 tests** passed with
+`pytest -q --basetemp=.validation/issues-final-retry-pytest`; Ruff and
+`git diff --check` passed. Metadata write failures preserve queued PCM, retry pending
+events without duplicates, and do not prevent WAV finalization. Pause/resume saves
+run on the writer, with a check that metadata is saved even without new audio.
+Atomic replacement retries transient permission failures up to four attempts, with
+at most 170 ms of backoff; checks cover exhausted retries, preserving the previous
+file, temporary-file cleanup, and cancellation between attempts. A full-suite run
+encountered a real transient `session.json` replacement denial before this retry
+was added.
+
+Synthetic Qt key events verify UK-style backtick, shifted tilde, German punctuation,
+AltGr-style modifiers, and a letter whose native key differs from its Qt character.
+Settings reload retains the native key, hides its storage suffix in labels, and
+detects equivalent bindings. Invalid and null monitor settings reopen safely.
+
+The mouse tests exercise one shared hook, dispatch while the owner thread waits,
+queued Qt delivery, removal, registration failure/retry, and final thread shutdown.
+A real Windows check passed shared hook registration on a separate thread, message
+posting, partial subscription removal, and final unhook/join. The broader
+`scripts/smoke_mouse.py` check reached keyboard registration but Windows denied
+`RegisterHotKey` with error 5 in this environment. Physical keyboard-layout checks
+and mouse input during a real recording remain manual. No packaged build was made.
+
 ## v0.3.0 release
 
 On October 11, 2026, the release executable was rebuilt at

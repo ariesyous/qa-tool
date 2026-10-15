@@ -179,6 +179,33 @@ def test_export_quality_defaults_persists_and_follows_embedding(window, monkeypa
         reopened.close()
 
 
+@pytest.mark.parametrize("value", [None, "", "invalid"])
+def test_invalid_saved_monitor_does_not_crash_launch(window, value):
+    window.settings.setValue("monitor", value)
+    window.settings.sync()
+    window.close()
+    reopened = MainWindow()
+    try:
+        assert reopened.monitors.count() == 0
+        assert reopened._apply()
+        assert reopened.settings.value("monitor") == 1
+    finally:
+        reopened.close()
+
+
+def test_native_shortcut_survives_settings_reload_with_readable_label(window, app, native):
+    window._save_shortcuts(["` [VK:0xDF]", "Ctrl+A [VK:0x51]"])
+    window.close()
+    reopened = MainWindow()
+    try:
+        assert reopened.shortcut == "` [VK:0xDF]"
+        assert "[VK:" not in reopened.hint.text() + reopened.shortcut_button.text()
+        assert reopened._apply(arm=True)
+        assert set(native.registered.values()) == {(0x4000, 0xDF), (0x4002, 0x51)}
+    finally:
+        reopened.close()
+
+
 def test_ui_exports_selected_quality_and_shrinks_without_session(window, monkeypatch, tmp_path):
     from qa_narrator.storage import Session, atomic_json
 

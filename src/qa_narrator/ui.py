@@ -31,7 +31,7 @@ from .export import export_markdown, timestamp
 from .shortcut import AdditionalShortcutsDialog, ShortcutDialog
 from .storage import Session, list_sessions
 from .transcription import MODELS, download_model, model_root, process_session
-from .windows import MAX_ADDITIONAL_SHORTCUTS, ScreenshotShortcuts, capture_target
+from .windows import MAX_ADDITIONAL_SHORTCUTS, ScreenshotShortcuts, capture_target, shortcut_label
 
 
 class Signals(QObject):
@@ -171,7 +171,7 @@ class MainWindow(QMainWindow):
 
         self.options = QGroupBox("Settings")
         form = QFormLayout(self.options)
-        self.shortcut_button = QPushButton(f"{self.shortcut}  ·  Change…")
+        self.shortcut_button = QPushButton(f"{shortcut_label(self.shortcut)}  ·  Change…")
         self.shortcut_button.clicked.connect(lambda: self._choose_shortcut())
         form.addRow("Screenshot shortcut", self.shortcut_button)
         self.additional_shortcuts_button = QPushButton()
@@ -205,7 +205,11 @@ class MainWindow(QMainWindow):
                     )
         except Exception as exc:
             self._notice("error", str(exc))
-        index = self.monitors.findData(int(self.settings.value("monitor", 1)))
+        try:
+            saved_monitor = int(self.settings.value("monitor", 1))
+        except (TypeError, ValueError):
+            saved_monitor = 1
+        index = self.monitors.findData(saved_monitor)
         self.monitors.setCurrentIndex(max(0, index))
         form.addRow("Monitor / fallback", self.monitors)
         self.model = QComboBox()
@@ -633,12 +637,13 @@ class MainWindow(QMainWindow):
             self.hotkey = None
 
     def _refresh_shortcuts(self):
-        self.shortcut_button.setText(f"{self.shortcut}  ·  Change…")
+        self.shortcut_button.setText(f"{shortcut_label(self.shortcut)}  ·  Change…")
         self.additional_shortcuts_button.setText(
             f"Additional shortcuts ({len(self.additional_shortcuts)}/{MAX_ADDITIONAL_SHORTCUTS})…"
         )
         self.hint.setText(
-            f"Switch to your application and press {' or '.join(self._shortcuts())} to capture."
+            "Switch to your application and press "
+            + " or ".join(map(shortcut_label, self._shortcuts())) + " to capture."
         )
 
     def _save_shortcuts(self, shortcuts):
@@ -724,7 +729,7 @@ class MainWindow(QMainWindow):
             for key, value in (
                 ("output", str(root)),
                 ("mode", self.mode.currentData()),
-                ("monitor", self.monitors.currentData()),
+                ("monitor", self.monitors.currentData() or 1),
                 ("model", self.model.currentText()),
             ):
                 self.settings.setValue(key, value)
