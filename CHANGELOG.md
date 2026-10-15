@@ -1,5 +1,11 @@
 # Release notes
 
+## Unreleased
+
+- Optional screenshot context records the focused window title and executable name,
+  off by default. Markdown escapes the labels and identifies the focused window
+  for monitor captures. Unavailable metadata does not prevent screenshots. (#5)
+
 ## 0.4.0 — October 15, 2026
 
 ### Added

@@ -179,6 +179,31 @@ def test_export_quality_defaults_persists_and_follows_embedding(window, monkeypa
         reopened.close()
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_window_context_defaults_off_persists_and_reaches_capture(window, monkeypatch, enabled):
+    assert not window.window_context.isChecked()
+    window.window_context.setChecked(enabled)
+    captured = []
+    monkeypatch.setattr(windows, "foreground", lambda: (42, 0))
+    window.engine = SimpleNamespace(
+        timeline=SimpleNamespace(state="recording"), capture=captured.append,
+    )
+    try:
+        window._capture()
+        assert captured[0]["include_window_context"] is enabled
+    finally:
+        window.engine = None
+    window.close()
+    reopened = MainWindow()
+    try:
+        assert reopened.window_context.isChecked() is enabled
+        reopened.window_context.setChecked(True)
+        reopened.window_context.setChecked(False)
+        assert not reopened.settings.value("window_context", type=bool)
+    finally:
+        reopened.close()
+
+
 @pytest.mark.parametrize("value", [None, "", "invalid"])
 def test_invalid_saved_monitor_does_not_crash_launch(window, value):
     window.settings.setValue("monitor", value)
