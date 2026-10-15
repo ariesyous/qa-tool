@@ -1,5 +1,35 @@
 # Validation record
 
+## Preserve images within budget and add vocabulary hints
+
+On October 15, 2026, all **160 tests** passed with
+`pytest -q --basetemp=.validation/preserve-vocabulary-all`; Ruff and
+`git diff --check` passed. This addresses #4 and the vocabulary-hints portion of #6.
+
+Compact export validates embedded images and returns the original Markdown bytes
+when the complete report is at or below its target. Tests verify exact-boundary
+and below-budget reports with 3840 × 2160 PNG and JPEG images, with image encoding
+disabled to detect accidental re-encoding. Oversized-report compression, progressive
+passes, quality-floor failures, invalid images, and previous-file preservation remain
+covered. Compression/cancellation fixtures now explicitly exceed the target so those
+tests still exercise image processing. Cancellation after the within-budget check
+also leaves the original and existing copies intact. An explicit size check replaces
+the final assertion after assembly.
+
+Vocabulary tests verify whitespace normalization, Unicode, empty/default hints,
+passing `hotwords` to the model while leaving previous-text conditioning disabled,
+session and transcript metadata, reuse after failed inference and session reload,
+explicit overrides, and clearing saved hints. GUI tests reopen saved preferences and
+exercise retries using current/cleared field text. CLI tests cover omitted hints,
+overrides, `--vocabulary=`, and invalid use without `--process`.
+
+The installed faster-whisper source and its
+[pinned v1.2.1 implementation](https://github.com/SYSTRAN/faster-whisper/blob/v1.2.1/faster_whisper/transcribe.py)
+support the `hotwords` argument used here. Inference tests use fake models; a real
+offline smoke check was skipped because the local `base.en` model is unavailable.
+Recognition quality has not been benchmarked. Larger models from #6 remain outside
+this change, and no packaged build was made.
+
 ## Microphone overflow, remaining robustness fixes, and agent handoff
 
 On October 15, 2026, all **144 tests** passed with

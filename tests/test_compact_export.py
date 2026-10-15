@@ -58,7 +58,7 @@ def test_progressively_compresses_to_exact_budget(monkeypatch):
     url = data_url(noisy_image(800, 450))
     content = b"Notes\n![first](" + url + b")\nMore feedback\n![second](" + url + b")"
     monkeypatch.setattr(compact, "PROFILES", ((800, 90),))
-    first = compact_markdown(content)
+    first = compact_markdown(content, target_bytes=len(content) - 1)
     monkeypatch.setattr(compact, "PROFILES", ((800, 90), (400, 80)))
     updates = []
     result = compact_markdown(content, target_bytes=len(first) - 1, progress=updates.append)
@@ -135,11 +135,12 @@ def make_session(tmp_path):
     return session
 
 
-def test_compact_preference_persists_and_raw_restores_exact_png(tmp_path):
+def test_compact_preference_persists_and_small_report_keeps_exact_png(tmp_path):
     session = make_session(tmp_path)
     source = (session.folder / "screenshots/001.png").read_bytes()
     result = export_markdown(session, embed_images=True, image_quality="compact").read_bytes()
-    assert decode(result).format == "JPEG"
+    assert decode(result).format == "PNG"
+    assert base64.b64decode(DATA_IMAGE.search(result).group(2)) == source
     reopened = Session.load(session.folder)
     assert reopened.data["export_image_quality"] == "compact"
     assert reopened.data["export_size_bytes"] == len(result)
@@ -206,20 +207,22 @@ def test_process_passes_compact_preference(tmp_path):
         image_quality="compact",
         progress=updates.append,
     )
-    assert decode(path.read_bytes()).format == "JPEG"
+    assert decode(path.read_bytes()).format == "PNG"
     assert session.data["export_image_quality"] == "compact"
     assert "Preparing screenshot 1 of 1…" in updates
-    assert any(message.startswith("Optimizing screenshot 1 of 1") for message in updates)
+    assert any("already fits" in message for message in updates)
+    assert not any(message.startswith("Optimizing") for message in updates)
     assert updates[-1] == "Saving Markdown…"
 
 
 @pytest.mark.parametrize("stage", ["Reading", "Scanning", "Optimizing", "Assembling", "Saving"])
-def test_cancel_keeps_original_and_previous_copy_at_each_stage(tmp_path, stage):
+def test_cancel_keeps_original_and_previous_copy_at_each_stage(tmp_path, monkeypatch, stage):
     from concurrent.futures import CancelledError
     from threading import Event
 
     source = tmp_path / "feedback.md"
-    original = b"Manual notes\n![shot](" + data_url(Image.new("RGB", (12, 8))) + b")"
+    original = b"Manual notes\n![shot](" + data_url(noisy_image(80, 45)) + b")"
+    monkeypatch.setattr(compact, "COMPACT_TARGET_BYTES", 10_000)
     source.write_bytes(original)
     previous = tmp_path / "feedback.compact.md"
     previous.write_bytes(b"Existing copy with my edits")
@@ -240,7 +243,7 @@ def test_cancellation_during_image_encode_is_not_reported_as_invalid_image(monke
     from concurrent.futures import CancelledError
     from threading import Event
 
-    content = b"![shot](" + data_url(Image.new("RGB", (12, 8))) + b")"
+    content = b"![shot](" + data_url(noisy_image(80, 45)) + b")"
     cancelled = Event()
     save = Image.Image.save
 
@@ -250,7 +253,57 @@ def test_cancellation_during_image_encode_is_not_reported_as_invalid_image(monke
 
     monkeypatch.setattr(Image.Image, "save", cancel_after_encode)
     with pytest.raises(CancelledError):
-        compact_markdown(content, cancelled=cancelled.is_set)
+        compact_markdown(content, target_bytes=10_000, cancelled=cancelled.is_set)
+
+
+@pytest.mark.parametrize("image_format", ["PNG", "JPEG"])
+@pytest.mark.parametrize("headroom", [0, 100])
+def test_report_that_fits_keeps_large_images_and_all_bytes_without_encoding(
+    monkeypatch, image_format, headroom
+):
+    image = Image.new("RGB", (3840, 2160), (100, 150, 200))
+    buffer = io.BytesIO()
+    image.save(buffer, format=image_format)
+    url = b"data:image/" + image_format.lower().encode() + b";base64,"
+    original = b"# Notes\r\nManual feedback\n![shot](" + url + base64.b64encode(buffer.getvalue()) + b")\n"
+
+    def fail(*args, **kwargs):
+        pytest.fail("Images in reports that fit must not be re-encoded")
+
+    monkeypatch.setattr(Image.Image, "save", fail)
+    result = compact_markdown(original, target_bytes=len(original) + headroom)
+    assert result == original
+    assert decode(result).size == (3840, 2160) and decode(result).format == image_format
+
+
+def test_size_check_after_assembly_is_explicit(monkeypatch):
+    from types import SimpleNamespace
+
+    content = b"![shot](" + data_url(noisy_image(80, 45)) + b")"
+    finditer = DATA_IMAGE.finditer
+    monkeypatch.setattr(compact, "DATA_IMAGE", SimpleNamespace(
+        finditer=finditer, sub=lambda *args: b"x" * 10_001
+    ))
+    with pytest.raises(ExportSizeError, match="Assembled Markdown"):
+        compact_markdown(content, target_bytes=10_000)
+
+
+def test_cancellation_after_preserving_small_report_does_not_publish_copy(tmp_path):
+    from concurrent.futures import CancelledError
+    from threading import Event
+
+    source = tmp_path / "feedback.md"
+    original = b"![shot](" + data_url(Image.new("RGB", (12, 8))) + b")"
+    source.write_bytes(original)
+    cancelled = Event()
+
+    def progress(message):
+        if "already fits" in message:
+            cancelled.set()
+
+    with pytest.raises(CancelledError):
+        shrink_markdown(source, progress=progress, cancelled=cancelled.is_set)
+    assert source.read_bytes() == original and list(tmp_path.iterdir()) == [source]
 
 
 def test_cancel_during_save_removes_temporary_file(tmp_path, monkeypatch):
