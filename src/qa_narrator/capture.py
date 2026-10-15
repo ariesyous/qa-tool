@@ -37,6 +37,8 @@ class CaptureEngine:
         self.sample_anchor = None
         self.captured_frames = 0
         self.use_adc = None
+        self.input_latency = 0.0
+        self.last_audio_end = None
 
     def start(self):
         try:
@@ -52,12 +54,16 @@ class CaptureEngine:
             self.stream_anchor = self.stream.time
             self.clock_anchor = (before + time.perf_counter_ns()) // 2
             self.timeline = Timeline()
+            self.input_latency = self.stream.latency
             self.session.update(
                 audio_clock={
                     "portaudio_anchor": self.stream_anchor,
                     "anchor_relative_ns": self.clock_anchor - self.timeline.origin,
                     "input_latency_seconds": self.stream.latency,
-                    "fallback": "continuous sample clock anchored at first callback minus buffer duration",
+                    "fallback": (
+                        "continuous sample clock anchored at callback minus the greater of "
+                        "reported input latency and buffer duration; reanchored after overflow"
+                    ),
                 }
             )
             self.session.event({"kind": "started", "t": 0, "monotonic_ns": 0})
@@ -80,7 +86,14 @@ class CaptureEngine:
         self.last_callback = time.perf_counter()
         if not self.accepting:
             return
+        overflow = False
         if status:
+            # Copy the flags: clearing overflow must not mutate PortAudio's status.
+            other_status = self.sd.CallbackFlags()
+            other_status |= status
+            overflow = other_status.input_overflow
+            other_status.input_overflow = False
+        if status and (not overflow or other_status):
             self.errors.put(
                 f"Microphone stream error: {status}. Recording stopped to preserve alignment."
             )
@@ -93,8 +106,16 @@ class CaptureEngine:
         if self.use_adc and valid_adc:
             start = self.clock_anchor + round((adc - self.stream_anchor) * 1e9)
         else:
-            if self.sample_anchor is None:
-                self.sample_anchor = time.perf_counter_ns() - round(frames / self.rate * 1e9)
+            if self.sample_anchor is None or overflow:
+                # PortAudio input latency already refers to the first sample, so
+                # do not also subtract a full buffer. Keep its duration as a floor
+                # when a driver reports zero/insufficient latency.
+                estimate = time.perf_counter_ns() - round(
+                    max(self.input_latency, frames / self.rate) * 1e9
+                )
+                self.sample_anchor = max(
+                    estimate, self.last_audio_end if self.last_audio_end is not None else estimate
+                )
                 self.captured_frames = 0
             self.use_adc = False
             start = self.sample_anchor + round(self.captured_frames / self.rate * 1e9)
@@ -108,6 +129,23 @@ class CaptureEngine:
                     {"kind": "warning", "t": self.timeline.elapsed(), "message": message}
                 )
                 self.notify("warning", message)
+        if overflow:
+            estimated = not (self.use_adc and valid_adc)
+            active_start = self.timeline.elapsed(start)
+            gap = (
+                max(0, active_start - self.timeline.elapsed(self.last_audio_end))
+                if self.last_audio_end is not None else None
+            )
+            message = "Microphone input overflow: some audio was lost; recording continues. " + (
+                "Gap timing is estimated from the callback clock and input latency."
+                if estimated else "Timestamped gaps are kept as silence."
+            )
+            self.warnings.put({
+                "kind": "warning", "t": active_start, "message": message,
+                "audio_gap_seconds": gap, "timing_estimated": estimated,
+            })
+            self.notify("warning", message)
+        self.last_audio_end = start + round(frames / self.rate * 1e9)
         self.captured_frames += frames
         for dest, a, b in self.timeline.slices(start, frames, self.rate):
             try:
@@ -193,6 +231,7 @@ class CaptureEngine:
 
     def capture(self, target):
         if not self.accepting or self.timeline.state != "recording":
+            self._screenshot_skipped()
             return
         if not self.screen_pending.acquire(blocking=False):
             self.notify("error", "Screenshot capture is busy; try again in a moment.")
@@ -208,6 +247,7 @@ class CaptureEngine:
             from .windows import foreground, window_rect
 
             if self.timeline.state != "recording" or not self.accepting:
+                self._screenshot_skipped()
                 return
             with mss.mss() as screen:
                 monitors = screen.monitors
@@ -245,6 +285,7 @@ class CaptureEngine:
                         "Active window changed before capture; press the shortcut again"
                     )
                 if self.timeline.state != "recording" or not self.accepting:
+                    self._screenshot_skipped()
                     return
                 captured = time.perf_counter_ns()
                 pixels = screen.grab(rect)
@@ -287,6 +328,10 @@ class CaptureEngine:
             self.notify("error", f"Screenshot failed: {exc}")
         finally:
             self.screen_pending.release()
+
+    def _screenshot_skipped(self):
+        reason = "paused" if self.timeline.state == "paused" else "stopped"
+        self.notify("warning", f"Screenshot skipped: recording {reason}.")
 
     def check_error(self):
         try:

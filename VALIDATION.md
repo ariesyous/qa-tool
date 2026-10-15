@@ -1,5 +1,43 @@
 # Validation record
 
+## Microphone overflow, remaining robustness fixes, and agent handoff
+
+On October 15, 2026, all **144 tests** passed with
+`pytest -q --basetemp=.validation/audio-guidance-final`; Ruff and
+`git diff --check` passed. These changes address #8, the remaining #9 items,
+and the documentation guidance requested in #3.
+
+Device-enumeration tests cover matching a microphone's WASAPI endpoint, the Windows
+Sound Mapper alias, a WASAPI default, saved/current selections, missing saved
+devices, and the absence of WASAPI. No physical microphone selection was changed
+during these tests.
+
+Synthetic callbacks verify continuation after input overflow, exact silence padding
+with ADC and fallback clocks, continued sample placement despite callback jitter,
+repeated overflow without clock rewind, and removal of paused time from both audio
+and reported gap duration. Overflow warnings persist with timestamps and an explicit
+estimated-timing flag when ADC timing is unavailable. Mixed error flags,
+disconnected/unresponsive streams, and a full audio writer queue remain fatal.
+
+Fallback timing subtracts reported input latency with a one-buffer-duration floor.
+It does not add the two delays: PortAudio defines reported input latency relative
+to the callback buffer's first sample. See the
+[PortAudio timing model](https://github.com/PortAudio/portaudio/wiki/BufferingLatencyAndTimingImplementationGuidelines#basic-bufferingtiming-model).
+Without ADC timestamps, overflow gap duration remains an estimate that can include
+callback scheduling delay.
+
+Queued-screenshot tests pause or stop before worker execution and during capture
+setup, checking the skip message, absence of a pixel grab, and slot cleanup.
+Transcription-retry tests cover updated transcripts, byte-for-byte preservation of
+manual Markdown edits, successful GUI/CLI messaging, later confirmed regeneration,
+and propagation of unrelated export errors. Inference uses a fake model.
+
+The README, settings hint, CLI help, and report headers recommend linked screenshots
+for coding agents and explain why compact embedded images can still exceed text
+reader limits. The 25 MB threshold is described as an application sharing target.
+Real microphone overflow/disconnect recovery, listening checks, and packaged-app
+validation remain manual; no packaged build was made for these changes.
+
 ## Recording reliability and shortcut fixes
 
 On October 15, 2026, regression checks cover issues #7, #1, #2, and the saved-monitor

@@ -40,8 +40,9 @@ and SmartScreen reputation have not been tested.
 
 ## Your first walkthrough
 
-1. **Set the scene.** Select your microphone (prefer its **Windows WASAPI** entry
-   if available). In Settings, choose your output folder and capture mode, then apply.
+1. **Set the scene.** Check your microphone. The app initially prefers its
+   **Windows WASAPI** entry when available and retains your saved selection.
+   In Settings, choose your output folder and capture mode, then apply.
 2. **Start talking.** Click **Start Recording**, switch to the app you are reviewing,
    and describe what you notice.
 3. **Capture the moment.** Use your screenshot shortcut whenever you want to add
@@ -59,6 +60,8 @@ and SmartScreen reputation have not been tested.
 Recording continues while minimized. The microphone remains open during Pause so
 resume is immediate, but paused samples are neither queued nor written. Closing is
 blocked during recording/processing; minimize the window to leave it working.
+If a requested screenshot is still waiting for capture when Pause or Stop takes
+effect, a message explains that the screenshot was skipped.
 
 ## Screenshot shortcuts
 
@@ -93,7 +96,31 @@ stalls do not block the hook's message loop.
 
 ![Screenshot shortcut picker explaining keyboard and mouse shortcuts](docs/screenshots/shortcut-picker.png)
 
+## Sharing with coding agents
+
+**For coding agents, use linked images.** Leave **Embed screenshots in Markdown**
+off (the default). For an existing embedded report, turn embedding off and click
+**Regenerate Markdown**, confirming replacement if you have edited the report.
+
+Share `feedback.md` together with its `screenshots` folder, preserving their relative
+paths. You can zip those files together. Audio is not needed for this handoff.
+Ask the agent to open the referenced screenshots as images as it reads your feedback.
+
+Embedded images are stored as long base64 lines that can exceed an agent's text
+reading limits. Compact export reduces file size but still uses one long line per
+image. If only an embedded report is available, extract its data URLs to image files
+before asking the agent to inspect the screenshots.
+
+The equivalent command-line export is:
+
+```powershell
+uv run qa-narrator --export "C:\path\to\session" --linked-images
+```
+
 ## Portable Markdown with embedded screenshots
+
+Use embedded export when you need a single file for a viewer that supports data-URL
+images. For coding agents, use the [linked-image handoff](#sharing-with-coding-agents).
 
 Enable **Settings → Export → Embed screenshots in Markdown (portable)**.
 The preference saves immediately. New sessions embed their screenshots on export.
@@ -120,6 +147,8 @@ With this option, share **only `feedback.md`**. Choose **Embedded image quality*
 The app and CLI report the final file size, warn from 20 MB, and flag files at or
 above 25 MB. Existing sessions also show the current Markdown size when selected.
 MB here means 1,000,000 bytes, leaving room beneath either a 25 MB or 25 MiB limit.
+The 24 MB budget and 25 MB sharing threshold are application targets, rather than
+a promise about a specific upload destination. Check the destination's own limits.
 
 To shrink a report you already created, click **Shrink Markdown…** and select the
 file. This works without the original session and saves `name.compact.md` beside it
@@ -146,8 +175,7 @@ one third to the image data size, so the Markdown can be large.
 
 Data-URL image display depends on the viewer. Some renderers filter these URLs;
 [GitHub's markup tracker](https://github.com/github/markup/issues/1614) documents this
-limitation. An agent may need to extract/decode the base64 to PNG before visually
-inspecting it; reading encoded text alone is not equivalent to viewing an image.
+limitation. Reading encoded text alone is not equivalent to viewing an image.
 Relative-image export remains the default for compatibility.
 
 <details>
@@ -212,6 +240,8 @@ An interrupted transcription can be retried without recording again.
 **Regenerate Markdown** uses the saved transcript. Automatically generated output
 can be replaced; if its bytes have changed, replacement requires confirmation.
 Transcription retry also preserves manually edited Markdown.
+After a successful retry, the app reports that the transcript was updated and your
+edited Markdown was kept. Use **Regenerate Markdown** for confirmed replacement.
 
 Command-line recovery/export:
 
@@ -220,7 +250,8 @@ uv run qa-narrator --process "C:\path\to\session"
 uv run qa-narrator --export "C:\path\to\session"
 ```
 
-The CLI refuses to overwrite edited Markdown. Use the UI for confirmed replacement.
+CLI export refuses to overwrite edited Markdown. Transcription retry keeps your
+edits and reports the updated transcript. Use the UI for confirmed replacement.
 
 </details>
 
@@ -271,9 +302,11 @@ transcription behavior.
 - Audio and screenshots use one monotonic active-session timeline. Pauses are removed
   from both. PortAudio ADC timestamps are bridged to Python's monotonic clock and audio
   buffers are cropped at pause boundaries. Missing ADC timestamps use a continuous
-  sample clock anchored to the first callback; the session records a warning. This
-  fallback avoids dropping speech due to callback scheduling jitter, but can have
-  initial latency error or clock drift. WASAPI is preferable to legacy MME drivers.
+  sample clock anchored to the first callback minus reported input latency, using
+  at least one buffer duration; the session records a warning. Subsequent callback
+  jitter does not change that anchor. After overflow, fallback timing is reanchored
+  and explicitly marked as estimated. Driver latency inaccuracies and clock drift
+  can still affect timing. WASAPI is preferable to legacy MME drivers.
 - Screenshots use the time immediately before the pixel grab, with the shortcut request
   time also retained. Screenshots inside a transcribed word follow that whole word;
   equal-time screenshots precede words starting at that time. Multiple screenshots
@@ -290,8 +323,12 @@ transcription behavior.
   other visible windows. All-black/empty captures are rejected and PNGs are validated.
 - Windows per-monitor DPI awareness is enabled before creating windows. Monitor
   positions can be negative. Select the monitor again after changing display topology.
-- Devices that overflow, disconnect, or stop responding end recording and preserve
-  the saved portion; reconnect and start a new session. The app does not splice device
+- Input overflow records a timestamped warning and recording continues, with missing
+  audio represented by silence when its timing can be determined. Without reliable
+  ADC timestamps, the gap is estimated from the callback clock and input latency;
+  its duration can be inaccurate. Disconnects, unresponsive devices, other stream
+  status errors, and audio write failures still end recording and preserve the
+  saved portion; reconnect and start a new session. The app does not splice device
   changes into an existing recording. Sleep/suspend during recording is unsupported.
 - A session must fit standard WAV's 4 GB limit (many hours for mono audio). CPU inference
   can take time and is not cancellable in v1. The UI stays responsive during inference.

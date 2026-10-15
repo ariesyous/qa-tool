@@ -31,9 +31,9 @@ def check_cancelled(cancelled):
 def size_notice(size):
     label = f"{size / 1_000_000:.2f} MB"
     if size >= UPLOAD_LIMIT_BYTES:
-        return f"{label} — exceeds the 25 MB upload limit. Use compact export or Shrink Markdown."
+        return f"{label} — exceeds the 25 MB sharing target. Use compact export or Shrink Markdown."
     if size >= LARGE_EXPORT_BYTES:
-        return f"{label} — approaching the 25 MB upload limit."
+        return f"{label} — approaching the 25 MB sharing target."
     return label
 
 
