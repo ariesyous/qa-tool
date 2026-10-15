@@ -6,7 +6,7 @@ import shutil
 import pytest
 from PIL import Image
 
-from qa_narrator.export import export_markdown, render
+from qa_narrator.export import EditedMarkdownError, export_markdown, render
 from qa_narrator.storage import Session, atomic_json
 from qa_narrator.transcription import process_session
 
@@ -109,6 +109,63 @@ def test_processing_passes_portable_preference_to_export(session):
     path = process_session(session, factory=lambda _: model, embed_images=True)
     assert "data:image/png;base64," in path.read_text()
     assert session.data["export_embed_images"] is True
+
+
+def test_retry_updates_transcript_and_keeps_edited_report_without_error_status(session):
+    from types import SimpleNamespace
+
+    path = export_markdown(session)
+    edited = path.read_bytes() + b"\nMy manual feedback\n"
+    path.write_bytes(edited)
+    old_hash = session.data["export_sha256"]
+    session.update(export_error="Previous failure")
+    model = SimpleNamespace(transcribe=lambda *args, **kwargs: ([], SimpleNamespace(language="en")))
+    updates = []
+    assert process_session(session, factory=lambda _: model, progress=updates.append) is None
+    reopened = Session.load(session.folder)
+    assert reopened.data["transcription_status"] == "complete"
+    assert reopened.data["export_status"] == "manual_edits_kept"
+    assert reopened.data["export_error"] is None and reopened.data["export_sha256"] == old_hash
+    assert path.read_bytes() == edited
+    assert '"segments": []' in (session.folder / "transcription.json").read_text()
+    assert "Regenerate Markdown" in updates[-1]
+    with pytest.raises(EditedMarkdownError):
+        export_markdown(reopened)
+    export_markdown(reopened, overwrite=True)
+    assert path.read_bytes() != edited
+
+
+def test_retry_does_not_hide_other_export_failures(session, monkeypatch):
+    from types import SimpleNamespace
+
+    model = SimpleNamespace(transcribe=lambda *args, **kwargs: ([], SimpleNamespace(language="en")))
+
+    def fail(*args, **kwargs):
+        raise FileExistsError("Unrelated filesystem failure")
+
+    monkeypatch.setattr("qa_narrator.transcription.export_markdown", fail)
+    with pytest.raises(FileExistsError, match="Unrelated filesystem"):
+        process_session(session, factory=lambda _: model)
+    assert session.data["transcription_status"] == "complete"
+    assert session.data["export_status"] == "needs_attention"
+
+
+def test_cli_retry_explains_preserved_edits_and_does_not_print_none(session, monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    from qa_narrator.__main__ import main
+
+    (session.folder / "audio.wav").write_bytes(b"audio fixture")
+    path = export_markdown(session)
+    path.write_bytes(b"My manual feedback")
+    model = SimpleNamespace(transcribe=lambda *args, **kwargs: ([], SimpleNamespace(language="en")))
+    monkeypatch.setattr("qa_narrator.transcription.process_session", lambda *args, **kwargs:
+                        process_session(*args, factory=lambda _: model, **kwargs))
+    monkeypatch.setattr("sys.argv", ["qa-narrator", "--process", str(session.folder)])
+    assert main() == 0
+    output = capsys.readouterr().out
+    assert "Transcript updated" in output and "Regenerate Markdown" in output
+    assert "None" not in output and path.read_bytes() == b"My manual feedback"
 
 
 @pytest.mark.parametrize(

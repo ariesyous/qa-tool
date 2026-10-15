@@ -34,7 +34,7 @@ def main():
         "--linked-images",
         dest="embed_images",
         action="store_false",
-        help="Use relative screenshot paths instead of embedded images",
+        help="Use relative screenshot paths (recommended for coding agents; share screenshots/ too)",
     )
     args = parser.parse_args()
     quality_options = {"image_quality": args.image_quality} if args.image_quality else {}
@@ -81,8 +81,8 @@ def main():
 def _print_export(path):
     from .compact import size_notice
 
-    print(path)
     if path is not None:
+        print(path)
         print(size_notice(path.stat().st_size))
 
 
