@@ -25,7 +25,10 @@ app.setFont(QFont('Segoe UI', 10))
 window = MainWindow()
 window.show()
 app.processEvents()
-assert window.hotkey is not None, window.message.text()
+assert window._shortcuts_ready, window.message.text()
+assert window.hotkey is None  # Idle validation must release the native registrations.
+assert window._apply(), window.message.text()
+assert window.hotkey is None and window._shortcuts_ready
 assert window.mics.count() > 0
 assert window.start.isEnabled()
 assert not window.stop.isEnabled()
@@ -43,5 +46,5 @@ window.embed_images.setChecked(previous_embed)
 assert window.grab().save(str(root / "ui-preview.png"))
 window.close()
 app.processEvents()
-print("Qt UI constructed; native hotkey registered; idle button state verified; preview saved.")
+print("Qt UI constructed; shortcuts validated and released while idle; preview saved.")
 

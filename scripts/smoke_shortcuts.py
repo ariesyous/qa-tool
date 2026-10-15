@@ -1,4 +1,4 @@
-"""Check six native bindings and preview the real settings UI without recording.
+"""Check native bindings, recording lifecycle, and settings UI without recording audio.
 
 Uses posted hotkey messages and mouse callback fixtures, not physical input.
 Settings and previews stay in .validation/multiple-shortcuts.
@@ -7,6 +7,7 @@ Settings and previews stay in .validation/multiple-shortcuts.
 import ctypes
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from PySide6.QtCore import QSettings
@@ -26,6 +27,79 @@ enable_dpi_awareness()
 app = QApplication([])
 app.setStyle("Fusion")
 received = []
+
+
+def settle(window):
+    deadline = time.monotonic() + 5
+    while window.busy and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    app.processEvents()
+    assert not window.busy, window.message.text()
+
+
+class SmokeEngine:
+    """Exercise the UI's Start/Stop path without opening a microphone."""
+
+    def __init__(self, root, device, name, notify):
+        self.session = SimpleNamespace(folder=root, screenshots=lambda: [])
+        self.timeline = SimpleNamespace(state="recording", elapsed=lambda: 0.0)
+
+    def start(self):
+        return self
+
+    def check_error(self):
+        return None
+
+    def pause_resume(self):
+        self.timeline.state = "paused" if self.timeline.state == "recording" else "recording"
+
+    def stop(self):
+        return self.session
+
+
+def check_recording_lifecycle(window):
+    assert window.hotkey is None and window._shortcuts_ready, window.message.text()
+    # A second native owner can claim every keyboard shortcut while the UI is idle.
+    probe = ScreenshotShortcuts(app, lambda: None, window._shortcuts())
+    probe.close()
+    with (
+        patch("qa_narrator.ui.CaptureEngine", SmokeEngine),
+        patch.object(window, "_process"),
+        patch.object(window, "_sessions"),
+    ):
+        try:
+            window._start()
+            settle(window)
+            assert window.engine is not None, window.message.text()
+            bindings = list(window.hotkey.bindings.values())
+            assert len(bindings) == len(window._shortcuts())
+            assert all(b.registered or b.mouse_hook is not None for b in bindings)
+            # Windows must reject a competing owner while recording (and paused).
+            for paused in (False, True):
+                if paused:
+                    window._pause()
+                    assert window.engine.timeline.state == "paused"
+                try:
+                    probe = ScreenshotShortcuts(app, lambda: None, window._shortcuts()[:1])
+                except OSError:
+                    pass
+                else:
+                    probe.close()
+                    raise AssertionError("Recording did not reserve the keyboard shortcut")
+            window._stop()
+            settle(window)
+            assert window.engine is None and window.hotkey is None
+            assert window._shortcuts_ready and window.start.isEnabled()
+            assert all(not b.registered and b.mouse_hook is None for b in bindings)
+            probe = ScreenshotShortcuts(app, lambda: None, window._shortcuts())
+            probe.close()
+        finally:
+            if window.engine is not None:
+                window._stop()
+            settle(window)
+
+
 group = ScreenshotShortcuts(app, lambda: received.append(True), shortcuts)
 try:
     for binding in group.bindings.values():
@@ -59,10 +133,12 @@ with patch("qa_narrator.ui.QSettings", return_value=settings):
     try:
         window.show()
         app.processEvents()
-        assert window.hotkey is not None, window.message.text()
+        assert window.hotkey is None and window._shortcuts_ready, window.message.text()
         assert window.grab().save(str(root / "single-shortcut.png"))
-        window.hotkey.configure(shortcuts)
         window._save_shortcuts(shortcuts)
+        assert window._apply(), window.message.text()
+        assert window.hotkey is None
+        check_recording_lifecycle(window)
         dialog = AdditionalShortcutsDialog(window)
         dialog.show()
         app.processEvents()
@@ -75,7 +151,7 @@ with patch("qa_narrator.ui.QSettings", return_value=settings):
     reopened = MainWindow()
     try:
         assert reopened._shortcuts() == shortcuts
-        assert len(reopened.hotkey.bindings) == 6
+        check_recording_lifecycle(reopened)
     finally:
         reopened.close()
-print("PASS: six native bindings, posted keyboard/mouse fixture dispatch, removal, reload, and UI previews.")
+print("PASS: native dispatch, idle release, Start/Pause/Stop reservation, reload, and UI previews.")
