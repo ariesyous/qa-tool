@@ -8,12 +8,12 @@ voice and transcribes it on your Windows PC, ready for you to share with a teamm
 or coding agent.
 
 **[Download for Windows →](https://github.com/ariesyous/qa-tool/releases/latest)**
-Choose **QANarrator-v0.4.0-windows-x64.zip**, then follow the [quick start](#download-and-launch).
+Choose **QANarrator-v0.5.0-windows-x64.zip**, then follow the [quick start](#download-and-launch).
 Requires Windows 10/11 x64.
 
-Version **0.4.0** adds vocabulary hints, preserves images in reports that already
-fit the compact target, and improves microphone, shortcut, and session recovery
-reliability. See the [release notes](CHANGELOG.md).
+Version **0.5.0** adds optional screenshot labels with the focused window title
+and app name. Enable them in Settings when useful; they are off by default because
+titles can contain private information. See the [release notes](CHANGELOG.md).
 
 [Quick start](#download-and-launch) · [First walkthrough](#your-first-walkthrough) · [Screenshot shortcuts](#screenshot-shortcuts) · [Portable Markdown](#portable-markdown-with-embedded-screenshots) · [Troubleshooting](#troubleshooting) · [Developer setup](#setup-from-source)
 
@@ -32,7 +32,7 @@ model download needs internet access; transcription runs locally afterward.
 
 ## Download and launch
 
-1. Download **QANarrator-v0.4.0-windows-x64.zip** from the
+1. Download **QANarrator-v0.5.0-windows-x64.zip** from the
    [latest release](https://github.com/ariesyous/qa-tool/releases/latest).
 2. Extract the ZIP, then double-click **`QANarrator\QANarrator.exe`**.
    Keep the entire extracted `QANarrator` folder together, including `_internal`.

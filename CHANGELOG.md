@@ -1,10 +1,18 @@
 # Release notes
 
-## Unreleased
+## 0.5.0 — October 15, 2026
 
 - Optional screenshot context records the focused window title and executable name,
   off by default. Markdown escapes the labels and identifies the focused window
   for monitor captures. Unavailable metadata does not prevent screenshots. (#5)
+- The preference saves immediately and applies to new screenshots. Disabling it
+  does not remove context from existing sessions or exports. Only the executable
+  basename is stored, never its full path. Context survives sidecar recovery.
+- Updated README screenshots show the new setting. Existing settings, sessions,
+  and downloaded models can be reused; models are still downloaded separately.
+
+Vocabulary hints shipped in 0.4.0. Larger models remain deferred under #6 pending
+Windows CPU performance and compatibility validation; contributions are welcome.
 
 ## 0.4.0 — October 15, 2026
 

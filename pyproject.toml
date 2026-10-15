@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "local-qa-narrator"
-version = "0.4.0"
+version = "0.5.0"
 description = "Local Windows audio walkthroughs with synchronized screenshot Markdown"
 requires-python = ">=3.12,<3.14"
 dependencies = [

@@ -1,5 +1,42 @@
 # Validation record
 
+## v0.5.0 release
+
+On October 15, 2026, the Windows x64 release was built from main after PR #14 at
+`dist/v0.5.0/QANarrator/QANarrator.exe`. All **176 tests**, Ruff for source/tests
+and release/window-context scripts, the offline lockfile check, and
+`git diff --check` passed. Source and installed metadata both report **0.5.0**;
+only the project version changed in the lockfile, with dependency pins unchanged.
+
+Native title/process lookup passed using a test widget, without recording audio
+or capturing other applications. Packaged linked and embedded exports retained
+the executable basename, escaped title text, and focused-window label. Tests
+cover opt-in defaults, immediate preference persistence, unavailable fields,
+process-handle cleanup, monitor/fallback labels, and screenshot sidecar recovery.
+
+Real offline CPU transcription with saved local `base.en` files and vocabulary
+hints passed. The source smoke test blocked network access with a socket guard;
+the packaged smoke used offline mode and also passed exact embedded-PNG roundtrips
+and normal native GUI launch/close. The existing model files were reused from
+the ignored validation directory; models are not bundled in the release.
+
+Packaged raw/compact/linked export and standalone-shrink checks passed. An
+in-budget 3840 × 2160 PNG retained its exact bytes. A 33,228,470-byte synthetic
+report compressed to 7,411,154 bytes. Source files and manual notes were preserved.
+Results are in ignored `.validation/release-v0.5.0/exports/result.json`,
+`.validation/release-v0.5.0/context/result.json`, and
+`.validation/packaged-result.json`.
+
+The README previews were refreshed from actual widgets using an explicit isolated
+INI file, example values, and no native shortcut registrations, then visually
+inspected. The release ZIP includes the updated documentation and screenshots,
+source license, and bundled dependency licenses. Packaging checks the embedded
+version, complete archive file list, and CRCs, and writes `SHA256SUMS.txt`.
+
+The executable remains unsigned. Physical microphone/keyboard acceptance,
+overflow/disconnect scenarios, and clean-machine deployment remain manual checks.
+Larger models were not added or benchmarked in this release.
+
 ## v0.4.0 release
 
 On October 15, 2026, the Windows x64 release was built at
