@@ -44,4 +44,6 @@ jobs:
         run: uv run --locked ruff check src tests
 
       - name: Test
-        run: uv run --locked pytest -q --basetemp=.validation/pytest
+        run: |
+          New-Item -ItemType Directory -Path .validation -Force | Out-Null
+          uv run --locked pytest -q --basetemp=.validation/pytest
