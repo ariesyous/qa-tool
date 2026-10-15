@@ -8,8 +8,12 @@ voice and transcribes it on your Windows PC, ready for you to share with a teamm
 or coding agent.
 
 **[Download for Windows →](https://github.com/ariesyous/qa-tool/releases/latest)**
-Choose **QANarrator-v0.3.0-windows-x64.zip**, then follow the [quick start](#download-and-launch).
+Choose **QANarrator-v0.4.0-windows-x64.zip**, then follow the [quick start](#download-and-launch).
 Requires Windows 10/11 x64.
+
+Version **0.4.0** adds vocabulary hints, preserves images in reports that already
+fit the compact target, and improves microphone, shortcut, and session recovery
+reliability. See the [release notes](CHANGELOG.md).
 
 [Quick start](#download-and-launch) · [First walkthrough](#your-first-walkthrough) · [Screenshot shortcuts](#screenshot-shortcuts) · [Portable Markdown](#portable-markdown-with-embedded-screenshots) · [Troubleshooting](#troubleshooting) · [Developer setup](#setup-from-source)
 
@@ -28,7 +32,7 @@ model download needs internet access; transcription runs locally afterward.
 
 ## Download and launch
 
-1. Download **QANarrator-v0.3.0-windows-x64.zip** from the
+1. Download **QANarrator-v0.4.0-windows-x64.zip** from the
    [latest release](https://github.com/ariesyous/qa-tool/releases/latest).
 2. Extract the ZIP, then double-click **`QANarrator\QANarrator.exe`**.
    Keep the entire extracted `QANarrator` folder together, including `_internal`.
@@ -37,6 +41,11 @@ model download needs internet access; transcription runs locally afterward.
 
 Windows 10/11 x64 is required. The build is unsigned; clean-machine deployment
 and SmartScreen reputation have not been tested.
+
+To upgrade, close the older app and extract the new ZIP into a separate folder.
+Your saved settings, sessions, and downloaded models can be reused. On non-US
+keyboard layouts, record previously saved backtick shortcuts again to adopt the
+correct key mapping.
 
 ## Your first walkthrough
 
@@ -391,9 +400,20 @@ packaged-app smoke checks remain manual; see [VALIDATION.md](VALIDATION.md).
 uv sync --locked --extra dev
 New-Item -ItemType Directory -Path .validation -Force | Out-Null
 uv run pytest -q --basetemp=.validation/pytest
-uv run ruff check src tests
+uv run ruff check src tests scripts/package_release.py scripts/smoke_release.py
 .\scripts\build.ps1
 ```
+
+For a versioned release package, build into its release directory and package the
+complete application folder, documentation, and bundled dependency licenses:
+
+```powershell
+.\scripts\build.ps1 -OutputDirectory dist/v0.4.0
+uv run python scripts/package_release.py
+```
+
+The packaging script reads the source version, verifies the embedded executable
+version, checks the ZIP contents and CRCs, and writes `SHA256SUMS.txt` beside the ZIP.
 
 The PyInstaller build is a portable **one-folder** Windows x64 distribution. Models
 are not embedded. It is unsigned; distribution/signing and a clean-machine install

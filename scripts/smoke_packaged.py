@@ -16,6 +16,7 @@ from qa_narrator.storage import Session
 parser = argparse.ArgumentParser()
 parser.add_argument('--exe', default='dist/QANarrator/QANarrator.exe')
 parser.add_argument('--embed-images', action='store_true')
+parser.add_argument('--vocabulary', default=None)
 args = parser.parse_args()
 root = Path('.validation').resolve()
 source = Session.load(json.loads((root / 'offline-result.json').read_text())['session'])
@@ -30,6 +31,8 @@ environment = dict(os.environ, HF_HUB_OFFLINE='1', HF_HUB_DISABLE_TELEMETRY='1')
 command = [str(exe), '--process', str(session.folder)]
 if args.embed_images:
     command.append('--embed-images')
+if args.vocabulary is not None:
+    command.extend(['--vocabulary', args.vocabulary])
 result = subprocess.run(command, env=environment, timeout=120,
                         creationflags=subprocess.CREATE_NO_WINDOW)
 assert result.returncode == 0, result.returncode
@@ -37,6 +40,7 @@ assert (session.folder / 'feedback.md').exists()
 assert Session.load(session.folder).data['transcription_status'] == 'complete'
 transcript = json.loads((session.folder / 'transcription.json').read_text(encoding='utf-8'))
 assert 'button' in ''.join(s['text'] for s in transcript['segments']).lower()
+assert transcript['vocabulary'] == ' '.join((args.vocabulary or '').split())
 if args.embed_images:
     report_text = (session.folder / 'feedback.md').read_text(encoding='utf-8')
     images = re.findall(r'!\[Screenshot \d+\]\(data:image/png;base64,([A-Za-z0-9+/=]+)\)', report_text)
@@ -86,7 +90,8 @@ finally:
         process.wait(timeout=10)
     gui_log.close()
 report = {'session': str(session.folder), 'offline_inference_and_export': 'passed',
-          'gui_launch_and_normal_close': 'passed', 'embedded_png_roundtrip': args.embed_images}
+          'gui_launch_and_normal_close': 'passed', 'embedded_png_roundtrip': args.embed_images,
+          'vocabulary': transcript['vocabulary']}
 (root / 'packaged-result.json').write_text(json.dumps(report, indent=2), encoding='utf-8')
 print(json.dumps(report, indent=2))
 

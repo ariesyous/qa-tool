@@ -1,5 +1,44 @@
 # Validation record
 
+## v0.4.0 release
+
+On October 15, 2026, the Windows x64 release was built at
+`dist/v0.4.0/QANarrator/QANarrator.exe`. Source and installed package metadata both
+report **0.4.0**, and the embedded executable version was checked independently.
+All **160 tests**, Ruff for source/tests and the new release scripts, the offline
+lockfile check, and `git diff --check` passed. Only the local project version changed
+in the dependency lock; dependency versions remain pinned.
+
+A local `base.en` model was downloaded separately into the ignored validation
+directory. Real CPU inference with vocabulary hints, word timestamps, and Markdown
+export passed with network access blocked by the source smoke test. The packaged
+executable also passed offline inference with hints, exact embedded-PNG roundtrips,
+and native GUI launch/normal close. Models are not included in the release ZIP.
+
+Packaged raw, compact, linked, and standalone-shrink checks passed. A within-budget
+3840 × 2160 PNG retained its exact bytes; a 33,228,470-byte synthetic high-entropy
+report compressed to 7,411,154 bytes. Standalone shrinking preserved manual notes
+and its input; reports already within the target produced identical copies.
+Results are in ignored `.validation/release-v0.4.0/exports/result.json` and
+`.validation/packaged-result.json`.
+
+Native mouse hook registration, dispatch, keyboard/mouse switching, and cleanup
+passed on the Windows desktop. `smoke_shortcuts.py` also passed posted hotkey/mouse
+callback dispatch, idle release, Start/Pause/Stop reservation, and settings reload.
+These are synthetic dispatch checks; physical microphone recording, overflow/
+disconnect acceptance, real keyboard-layout checks, and clean-machine deployment
+remain manual. The executable remains unsigned.
+
+README screenshots were refreshed from the actual widgets using an explicit,
+isolated preview INI file and example output/vocabulary values. The previews were
+visually inspected. Native shortcut registration was replaced only in this
+documentation renderer; native shortcut behavior was checked separately above.
+
+The ZIP includes the complete `QANarrator` folder, updated README/release notes,
+validation record, screenshots, source license, and bundled dependency licenses.
+`scripts/package_release.py` checks the embedded version, archive file list and CRCs,
+then writes `SHA256SUMS.txt` beside the archive.
+
 ## Preserve images within budget and add vocabulary hints
 
 On October 15, 2026, all **160 tests** passed with

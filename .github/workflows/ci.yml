@@ -41,7 +41,7 @@ jobs:
         run: uv sync --locked --extra dev
 
       - name: Lint
-        run: uv run --locked ruff check src tests
+        run: uv run --locked ruff check src tests scripts/package_release.py scripts/smoke_release.py
 
       - name: Test
         run: |
