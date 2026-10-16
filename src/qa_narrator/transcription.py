@@ -47,6 +47,43 @@ def local_model(name, root=None):
     )
 
 
+def fit_vocabulary(vocabulary, model):
+    """Return (used, unused) hint text that fits faster-whisper's hotword budget.
+
+    faster-whisper keeps at most ``max_length // 2 - 1`` hotword tokens (223 for
+    Whisper's 448-token context) and silently cuts the rest, possibly mid-term.
+    Keep whole comma-separated terms (or words, without commas) in order instead,
+    so callers can report exactly which hints were not used.
+    """
+    tokenizer = getattr(model, "hf_tokenizer", None)
+    if not vocabulary or tokenizer is None:
+        return vocabulary, ""
+    budget = getattr(model, "max_length", 448) // 2 - 1
+
+    def count(text):
+        return len(tokenizer.encode(" " + text.strip(), add_special_tokens=False).ids)
+
+    try:
+        if count(vocabulary) <= budget:
+            return vocabulary, ""
+        separator = ", " if "," in vocabulary else " "
+        terms = [term.strip() for term in vocabulary.split(separator.strip() or None)]
+        if separator == ", " and count(terms[0]) > budget:
+            # One comma-free run is over the limit; keep whole words instead of nothing.
+            separator, terms = " ", vocabulary.split()
+        terms = list(dict.fromkeys(term for term in terms if term))  # Repeats waste budget.
+        used = []
+        for index, term in enumerate(terms):
+            if count(separator.join(used + [term])) > budget:
+                return separator.join(used), separator.join(terms[index:])
+            used.append(term)
+        return separator.join(used), ""
+    except Exception:
+        # An unexpected tokenizer must not fail transcription; faster-whisper still
+        # applies its own limit.
+        return vocabulary, ""
+
+
 def process_session(
     session,
     model_name="base.en",
@@ -62,11 +99,15 @@ def process_session(
     vocabulary = " ".join(vocabulary.split())
     session.update(
         transcription_status="processing", transcription_error=None,
-        transcription_vocabulary=vocabulary,
+        transcription_vocabulary=vocabulary, transcription_vocabulary_unused="",
     )
     try:
         progress("Loading local model…")
         model = factory(model_name)
+        hints, unused = fit_vocabulary(vocabulary, model)
+        session.update(transcription_vocabulary_unused=unused)
+        if unused:
+            progress(f"Vocabulary hints exceed the model's limit; not used: {unused}")
         progress("Transcribing locally on CPU…")
         segments, info = model.transcribe(
             str(session.folder / "audio.wav"),
@@ -75,7 +116,7 @@ def process_session(
             beam_size=5,
             vad_filter=True,
             condition_on_previous_text=False,
-            hotwords=vocabulary or None,
+            hotwords=hints or None,
         )
         result = []
         for segment in segments:
@@ -100,7 +141,7 @@ def process_session(
             session.folder / "transcription.json",
             {
                 "version": 1, "model": model_name, "language": info.language,
-                "vocabulary": vocabulary, "segments": result,
+                "vocabulary": vocabulary, "vocabulary_unused": unused, "segments": result,
             },
         )
         session.update(transcription_status="complete")

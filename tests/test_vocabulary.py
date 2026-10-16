@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from qa_narrator.storage import Session
-from qa_narrator.transcription import process_session
+from qa_narrator.transcription import fit_vocabulary, process_session
 
 
 def session_with_audio(tmp_path):
@@ -85,3 +85,92 @@ def test_cli_rejects_vocabulary_without_processing(monkeypatch, capsys):
         main()
     assert error.value.code == 2
     assert "--vocabulary requires --process" in capsys.readouterr().err
+
+
+class WordTokenizer:
+    """One token per whitespace-separated word, like a crude BPE stand-in."""
+
+    def encode(self, text, add_special_tokens=False):
+        assert add_special_tokens is False
+        return SimpleNamespace(ids=text.split())
+
+
+def tokenized_model(options, max_length):
+    model = model_with_options(options)
+    model.hf_tokenizer = WordTokenizer()
+    model.max_length = max_length
+    return model
+
+
+def test_hints_within_budget_reach_hotwords_unchanged(tmp_path):
+    session = session_with_audio(tmp_path)
+    options = []
+    # max_length 448 -> 223-token budget, the faster-whisper limit; 223 words fit exactly.
+    vocabulary = " ".join(f"term{i}" for i in range(223))
+    process_session(session, vocabulary=vocabulary, factory=lambda _: tokenized_model(options, 448))
+    assert options[0]["hotwords"] == vocabulary
+    assert session.data["transcription_vocabulary_unused"] == ""
+
+
+def test_long_hints_keep_whole_terms_and_report_the_rest(tmp_path):
+    session = session_with_audio(tmp_path)
+    options, updates = [], []
+    vocabulary = "Acme UI, Save As, Order History Page, OAuth"
+    # Budget of 5 words: "Acme UI, Save As," fits; "Order History Page" would exceed it.
+    process_session(
+        session, vocabulary=vocabulary, progress=updates.append,
+        factory=lambda _: tokenized_model(options, 12),
+    )
+    assert options[0]["hotwords"] == "Acme UI, Save As"
+    assert session.data["transcription_vocabulary"] == vocabulary
+    assert session.data["transcription_vocabulary_unused"] == "Order History Page, OAuth"
+    transcript = json.loads((session.folder / "transcription.json").read_text(encoding="utf-8"))
+    assert transcript["vocabulary_unused"] == "Order History Page, OAuth"
+    assert any("not used: Order History Page, OAuth" in message for message in updates)
+
+
+def test_long_hints_without_commas_are_kept_word_by_word(tmp_path):
+    session = session_with_audio(tmp_path)
+    options = []
+    process_session(
+        session, vocabulary="alpha beta gamma delta", factory=lambda _: tokenized_model(options, 6)
+    )
+    assert options[0]["hotwords"] == "alpha beta"
+    assert session.data["transcription_vocabulary_unused"] == "gamma delta"
+
+
+def test_one_long_comma_free_run_falls_back_to_words_and_repeats_are_dropped(tmp_path):
+    session = session_with_audio(tmp_path)
+    options = []
+    vocabulary = "alpha beta gamma delta epsilon, OAuth, OAuth"
+    process_session(session, vocabulary=vocabulary, factory=lambda _: tokenized_model(options, 8))
+    # Budget 3 words; the first comma-separated chunk alone is 5 words.
+    assert options[0]["hotwords"] == "alpha beta gamma"
+    assert session.data["transcription_vocabulary_unused"] == "delta epsilon, OAuth, OAuth"
+    # Over budget (4 words > 3), so repeats are dropped before fitting.
+    model = tokenized_model([], 8)
+    assert fit_vocabulary("OAuth, OAuth, SSO, Kubernetes", model) == ("OAuth, SSO, Kubernetes", "")
+
+
+def test_unused_hints_are_cleared_when_a_retry_fails_before_transcribing(tmp_path):
+    session = session_with_audio(tmp_path)
+    process_session(
+        session, vocabulary="a b c d", factory=lambda _: tokenized_model([], 6)
+    )
+    assert session.data["transcription_vocabulary_unused"] == "c d"
+
+    def fail(_):
+        raise OSError("Model unavailable")
+
+    with pytest.raises(OSError):
+        process_session(session, vocabulary="a", factory=fail)
+    assert session.data["transcription_vocabulary_unused"] == ""
+
+
+def test_unexpected_tokenizer_never_blocks_transcription(tmp_path):
+    session = session_with_audio(tmp_path)
+    options = []
+    model = model_with_options(options)
+    model.hf_tokenizer = SimpleNamespace(encode=lambda *a, **k: 1 / 0)
+    process_session(session, vocabulary="AcmeUI, Save As", factory=lambda _: model)
+    assert options[0]["hotwords"] == "AcmeUI, Save As"
