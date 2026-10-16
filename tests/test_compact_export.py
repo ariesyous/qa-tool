@@ -21,6 +21,13 @@ def noisy_image(width, height):
     return Image.frombytes("RGB", (width, height), random.Random(42).randbytes(width * height * 3))
 
 
+def decode_at(content, index):
+    match = list(DATA_IMAGE.finditer(content))[index]
+    image = Image.open(io.BytesIO(base64.b64decode(match.group(2), validate=True)))
+    image.load()
+    return image
+
+
 def decode(content):
     match = DATA_IMAGE.search(content)
     image = Image.open(io.BytesIO(base64.b64decode(match.group(2), validate=True)))
@@ -57,23 +64,43 @@ def test_shrink_never_overwrites_previous_copy(tmp_path):
 def test_progressively_compresses_to_exact_budget(monkeypatch):
     url = data_url(noisy_image(800, 450))
     content = b"Notes\n![first](" + url + b")\nMore feedback\n![second](" + url + b")"
-    monkeypatch.setattr(compact, "PROFILES", ((800, 90),))
-    first = compact_markdown(content, target_bytes=len(content) - 1)
+    matches = list(DATA_IMAGE.finditer(content))
+    # Size with both images at the first profile: one byte over forces a second pass.
+    both_first_pass = len(content) - sum(
+        len(m.group(0)) - len(compact._smaller_image(m, 800, 90)) for m in matches
+    )
     monkeypatch.setattr(compact, "PROFILES", ((800, 90), (400, 80)))
     updates = []
-    result = compact_markdown(content, target_bytes=len(first) - 1, progress=updates.append)
+    result = compact_markdown(content, target_bytes=both_first_pass - 1, progress=updates.append)
     assert [message for message in updates if message.startswith("Optimizing")] == [
-        f"Optimizing screenshot {shot} of 2 — pass {attempt} of up to 2…"
-        for attempt in (1, 2)
-        for shot in (1, 2)
+        "Optimizing screenshot 1 of 2 — pass 1 of up to 2…",
+        "Optimizing screenshot 2 of 2 — pass 1 of up to 2…",
+        "Optimizing screenshot 1 of 2 — pass 2 of up to 2…",
     ]
     assert "Trying more compression" in " ".join(updates)
     assert updates[-1] == "Assembling compact Markdown…"
-    assert len(result) < len(first)
+    assert len(result) <= both_first_pass - 1
     assert len(DATA_IMAGE.findall(result)) == 2
     assert DATA_IMAGE.sub(b"IMAGE", result) == DATA_IMAGE.sub(b"IMAGE", content)
-    assert decode(result).size == (400, 225)
-    assert compact_markdown(content, target_bytes=len(first)) == first
+    sizes = [decode_at(result, i).size for i in range(2)]
+    assert sizes == [(400, 225), (800, 450)]  # stopped once the budget was met
+    # Exactly at the target still fits, after the first pass alone.
+    assert len(compact_markdown(content, target_bytes=both_first_pass)) == both_first_pass
+
+
+def test_just_over_target_compresses_only_the_largest_screenshots(monkeypatch):
+    small, large, medium = noisy_image(300, 169), noisy_image(1200, 675), noisy_image(600, 338)
+    urls = [data_url(image) for image in (small, large, medium)]
+    content = b"# Notes\n" + b"\n".join(b"![shot](" + url + b")" for url in urls) + b"\n"
+    updates = []
+    result = compact_markdown(content, target_bytes=len(content) - 1, progress=updates.append)
+    assert len(result) <= len(content) - 1
+    assert [message for message in updates if message.startswith("Optimizing")] == [
+        "Optimizing screenshot 2 of 3 — pass 1 of up to 4…"
+    ]
+    kept = [m.group(0) for m in DATA_IMAGE.finditer(result)]
+    assert kept[0] == urls[0] and kept[2] == urls[2]  # untouched PNG bytes
+    assert decode_at(result, 1).format == "JPEG" and decode_at(result, 1).size == (1200, 675)
 
 
 def test_unreachable_budget_keeps_previous_export_and_preferences(tmp_path, monkeypatch):
