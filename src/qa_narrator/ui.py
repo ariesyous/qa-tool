@@ -25,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .capture import CaptureEngine
+from .capture import CaptureEngine, MetadataSaveError
 from .compact import LARGE_EXPORT_BYTES, shrink_markdown, size_notice
 from .export import export_markdown, timestamp
 from .shortcut import AdditionalShortcutsDialog, ShortcutDialog
@@ -38,6 +38,7 @@ class Signals(QObject):
     finished = Signal(object, object, object)
     notice = Signal(str, str)
     progress = Signal(str)
+    metadata_saved = Signal(object, object)
 
 
 class MainWindow(QMainWindow):
@@ -52,6 +53,14 @@ class MainWindow(QMainWindow):
         self.signals.finished.connect(self._finished, Qt.QueuedConnection)
         self.signals.notice.connect(self._notice)
         self.signals.progress.connect(self._progress)
+        self.signals.metadata_saved.connect(self._metadata_saved, Qt.QueuedConnection)
+        # A stopped session whose session.json could not be written yet. It is kept
+        # in memory and retried, because reloading from disk would lose its events.
+        self._unsaved_session = None
+        self._metadata_timer = QTimer(self)
+        self._metadata_timer.setInterval(5000)
+        self._metadata_timer.timeout.connect(self._retry_metadata)
+        self._metadata_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="metadata")
         self.engine, self.session, self.hotkey = None, None, None
         # Whether the configured shortcuts last registered successfully. Registrations are
         # only held while recording; see _release_shortcuts.
@@ -330,7 +339,11 @@ class MainWindow(QMainWindow):
 
     def _select_session(self):
         folder = self.sessions.currentData()
-        self.session = Session.load(folder) if folder else None
+        unsaved = self._unsaved_session
+        if unsaved is not None and folder and Path(folder) == unsaved.folder:
+            self.session = unsaved  # session.json on disk is stale until the retry succeeds
+        else:
+            self.session = Session.load(folder) if folder else None
         if self.session:
             self.settings.setValue("recent", folder)
             self.location.setText(folder)
@@ -369,9 +382,15 @@ class MainWindow(QMainWindow):
             self.shrink,
         ):
             widget.setEnabled(idle)
-        self.retry.setEnabled(idle and self.session is not None)
+        # Processing a session whose metadata is still being retried would race the save.
+        pending = (
+            self._unsaved_session is not None and self.session is not None
+            and self.session.folder == self._unsaved_session.folder
+        )
+        self.retry.setEnabled(idle and self.session is not None and not pending)
         self.regenerate.setEnabled(
             idle
+            and not pending
             and self.session is not None
             and (self.session.folder / "transcription.json").exists()
         )
@@ -480,7 +499,60 @@ class MainWindow(QMainWindow):
             return
         self.engine = None
         self.status.setText("Stopping and saving audio…")
-        self._run(engine.stop, self._stopped)
+        self._run(engine.stop, self._stopped, self._stop_failed)
+
+    def _stop_failed(self, error):
+        if not isinstance(error, MetadataSaveError):
+            self.status.setText("Needs attention · microphone is off")
+            self._notice("error", str(error))
+            self._sessions(self.session)
+            return
+        self.session = self._unsaved_session = error.session
+        self.location.setText(str(error.session.folder))
+        self.status.setText(
+            ("Audio saved" if error.audio_ok else "Needs attention")
+            + " · session metadata waiting to save"
+        )
+        self._notice(
+            "warning",
+            f"{error} Another program (antivirus or a sync client?) may be holding "
+            "session.json. Retrying every 5 seconds; keep QA Narrator open until it saves.",
+        )
+        self._metadata_timer.start()
+
+    def _retry_metadata(self):
+        session = self._unsaved_session
+        if session is None:
+            self._metadata_timer.stop()
+            return
+        self._metadata_timer.stop()  # Restarted if this attempt fails.
+
+        def done(future):
+            try:
+                future.result()
+            except Exception as exc:  # Any failure must reschedule, not stop retries.
+                self.signals.metadata_saved.emit(session, exc)
+            else:
+                self.signals.metadata_saved.emit(session, None)
+
+        self._metadata_pool.submit(session.save).add_done_callback(done)
+
+    def _metadata_saved(self, session, error):
+        if session is not self._unsaved_session:
+            return
+        if error is not None:
+            self._metadata_timer.start()
+            return
+        self._unsaved_session = None
+        if self.engine or self.busy:
+            # A new recording or another task is running; don't hijack it.
+            self._notice(
+                "success", "Session metadata saved. Use Recover / Retry Transcription to process it."
+            )
+            self._controls()
+            return
+        self._notice("success", "Session metadata saved.")
+        self._stopped(session)
 
     def _stopped(self, session):
         self.session = session
@@ -832,8 +904,27 @@ class MainWindow(QMainWindow):
             )
             event.ignore()
             return
+        if self._unsaved_session is not None:
+            try:
+                self._unsaved_session.save()
+                self._unsaved_session = None
+            except Exception as exc:
+                answer = QMessageBox.question(
+                    self,
+                    "Session metadata not saved",
+                    f"session.json still cannot be written ({exc}). Audio and screenshots are "
+                    "saved, but closing now loses pauses, warnings, and the stop time for this "
+                    "session. Close anyway?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No,
+                )
+                if answer != QMessageBox.Yes:
+                    event.ignore()
+                    return
         if self.hotkey:
             self.hotkey.close()
+        self._metadata_timer.stop()
+        self._metadata_pool.shutdown(wait=False)
         self.pool.shutdown(wait=False)
         event.accept()
 
