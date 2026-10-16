@@ -489,6 +489,10 @@ class MainWindow(QMainWindow):
         self._process()
 
     def _capture(self):
+        if self.engine and not self.busy and self.engine.timeline.state == "paused":
+            # The shortcut stays reserved while paused, so say why nothing was captured.
+            self._notice("warning", "Screenshot skipped: recording paused.")
+            return
         if self.engine and not self.busy and self.engine.timeline.state == "recording":
             try:
                 self.engine.capture(

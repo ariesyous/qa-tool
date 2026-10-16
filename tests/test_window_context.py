@@ -136,3 +136,13 @@ def test_old_sessions_keep_original_screenshot_heading(tmp_path):
     report = render(session, {"segments": []})
     assert "**[00:00 — Screenshot]**" in report
     assert "Focused window:" not in report
+
+
+def test_context_strips_invisible_characters_and_caps_length():
+    spoof = "Invoice\u202efdp.exe\u200b\u2066 \ufeffpaid\u009b"
+    label = screenshot_context({"mode": "window", "window_context": {"title": spoof}})
+    assert not any(c in label for c in "\u202e\u200b\u2066\ufeff\u009b")
+    assert "Invoicefdp\\.exe paid" in label
+    long_title = "A" * 40_000
+    label = screenshot_context({"mode": "window", "window_context": {"title": long_title}})
+    assert label.endswith("A…") and label.count("A") == 199

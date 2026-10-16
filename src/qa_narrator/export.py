@@ -6,6 +6,7 @@ import html
 import io
 import json
 import re
+import unicodedata
 from pathlib import PurePosixPath
 
 from .compact import compact_markdown
@@ -86,12 +87,22 @@ def image_source(session, event, embed_images):
     return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
 
 
+# Window titles can be up to 32K characters; a heading only needs the gist.
+CONTEXT_FIELD_LIMIT = 200
+
+
 def screenshot_context(event):
     context = event.get("window_context", {})
 
     def escape(value):
         text = " ".join(value.split())
-        text = "".join(c for c in text if ord(c) >= 32 and ord(c) != 127)
+        # Drop control characters (Cc, including C1 such as U+009B) and invisible format
+        # characters (Cf: bidi overrides such as U+202E, zero-width spaces), which can
+        # reorder or disguise the label. Joiners in emoji sequences go too; acceptable
+        # for a heading.
+        text = "".join(c for c in text if unicodedata.category(c) not in ("Cc", "Cf"))
+        if len(text) > CONTEXT_FIELD_LIMIT:
+            text = text[: CONTEXT_FIELD_LIMIT - 1].rstrip() + "…"
         return re.sub(r"([\\`*_{}\[\]()#+.!|~\-])", r"\\\1", html.escape(text, quote=False))
 
     fields = [escape(context.get(key, "")) for key in ("app", "title")]
