@@ -83,6 +83,9 @@ def compact_markdown(
     """Replace only data URLs, preserving all other bytes, including manual notes.
 
     Each pass starts from original images, avoiding accumulated JPEG artifacts.
+    Within a pass, the largest screenshots are compressed first and work stops as
+    soon as the report fits, so screenshots that are not needed to meet the target
+    keep their original bytes, format, and resolution.
     The exact UTF-8 file size (including base64 overhead and text) must fit.
     """
     check_cancelled(cancelled)
@@ -106,27 +109,22 @@ def compact_markdown(
         raise ExportSizeError(
             "Markdown text alone exceeds the compact size target. Split the report."
         )
+    size = len(content)
     for pass_number, (max_edge, quality) in enumerate(PROFILES, 1):
-        for index, match in enumerate(matches):
+        # Largest current image first; ties keep document order for determinism.
+        for index in sorted(range(len(matches)), key=lambda i: (-len(best[i]), i)):
             check_cancelled(cancelled)
             progress(
                 f"Optimizing screenshot {index + 1} of {len(matches)} "
                 f"— pass {pass_number} of up to {len(PROFILES)}…"
             )
-            candidate = _smaller_image(match, max_edge, quality, cancelled)
+            candidate = _smaller_image(matches[index], max_edge, quality, cancelled)
             check_cancelled(cancelled)
             if len(candidate) < len(best[index]):
+                size -= len(best[index]) - len(candidate)
                 best[index] = candidate
-        size = text_size + sum(map(len, best))
-        if size <= target_bytes:
-            progress("Assembling compact Markdown…")
-            check_cancelled(cancelled)
-            replacements = iter(best)
-            result = DATA_IMAGE.sub(lambda _: next(replacements), content)
-            check_cancelled(cancelled)
-            if len(result) > target_bytes:
-                raise ExportSizeError("Assembled Markdown exceeds the compact size target.")
-            return result
+            if size <= target_bytes:
+                return _assemble(content, best, target_bytes, progress, cancelled)
         progress(
             f"Pass {pass_number} finished: {size / 1_000_000:.2f} MB "
             f"(target {target_bytes / 1_000_000:g} MB). "
@@ -136,12 +134,22 @@ def compact_markdown(
                 else "Checking size limit…"
             )
         )
-    size = text_size + sum(map(len, best))
     raise ExportSizeError(
         f"Cannot fit this report under {target_bytes / 1_000_000:g} MB while keeping "
         f"screenshots at the quality floor (smallest result: {size / 1_000_000:.2f} MB). "
         "Split the report, use linked images, or choose raw export. Existing files were kept."
     )
+
+
+def _assemble(content, best, target_bytes, progress, cancelled):
+    progress("Assembling compact Markdown…")
+    check_cancelled(cancelled)
+    replacements = iter(best)
+    result = DATA_IMAGE.sub(lambda _: next(replacements), content)
+    check_cancelled(cancelled)
+    if len(result) > target_bytes:
+        raise ExportSizeError("Assembled Markdown exceeds the compact size target.")
+    return result
 
 
 def shrink_markdown(path, progress=lambda _: None, cancelled=lambda: False):
