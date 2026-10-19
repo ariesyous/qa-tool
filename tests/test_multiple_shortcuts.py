@@ -615,3 +615,17 @@ def test_apply_button_validates_then_releases(window, native):
     apply = next(b for b in window.findChildren(QPushButton) if b.text() == "Apply Settings")
     apply.click()
     assert window.hotkey is None and not native.registered and window.start.isEnabled()
+
+
+def test_shortcut_pressed_while_paused_explains_why_nothing_was_captured(app, recorder, native):
+    window = recorder
+    window._start()
+    settle(app, window)
+    captured = []
+    window.engine.capture = captured.append
+    window._pause()
+    window._capture()
+    assert not captured
+    assert "Screenshot skipped: recording paused." in window.message.text()
+    window._stop()  # leave no recording behind, or closing the window would prompt
+    settle(app, window)
