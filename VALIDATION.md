@@ -1,5 +1,40 @@
 # Validation record
 
+## v0.5.1 release
+
+On October 19, 2026, the Windows x64 release was built from main after PR #18 at
+`dist/v0.5.1/QANarrator/QANarrator.exe`. All **178 tests**, Ruff for source/tests
+and release scripts, the offline lockfile check, and `git diff --check` passed.
+Source, installed package metadata, and the embedded executable report **0.5.1**.
+Only the project version changed in the lockfile; dependency pins are unchanged.
+
+The new regressions verify removal of invisible control/format characters, the
+200-character label cap, and a paused shortcut press showing the skip message
+without capturing an image. Packaged linked and embedded exports passed with
+bidirectional overrides, zero-width characters, C1 controls, Markdown/HTML syntax,
+and a 40,000-character title. Original session context remained intact, embedded
+PNGs roundtripped exactly, and the packaged UI contains the paused-shortcut message.
+Results are in ignored `.validation/release-v0.5.1/context/result.json`.
+
+Native title/process lookup passed using a test widget, without microphone recording
+or capturing other applications. Real offline CPU transcription with vocabulary
+hints passed with the source socket guard, and the packaged executable passed
+offline inference, exact embedded-PNG roundtrips, and native GUI launch/normal close.
+Existing local model files were reused; models are not bundled in the release.
+
+Packaged raw/compact/linked export and standalone shrinking passed. A within-budget
+3840 × 2160 PNG retained its exact bytes. A 33,228,470-byte synthetic report compressed
+to 7,411,154 bytes. Standalone shrinking preserved its input and manual notes.
+Results are in ignored `.validation/release-v0.5.1/exports/result.json` and
+`.validation/packaged-result.json`. The build dependency list contains no unrelated
+Codex-runtime/Poppler DLLs. Existing README screenshots still match the layout.
+
+The release ZIP includes updated documentation, screenshots, source license, and
+bundled dependency licenses. Packaging verifies the executable version, complete
+archive file list, and CRCs, and writes `SHA256SUMS.txt`.
+The executable remains unsigned. Physical microphone/keyboard acceptance,
+overflow/disconnect scenarios, and clean-machine deployment remain manual checks.
+
 ## v0.5.0 release
 
 On October 15, 2026, the Windows x64 release was built from main after PR #14 at

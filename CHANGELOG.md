@@ -1,5 +1,18 @@
 # Release notes
 
+## 0.5.1 — October 19, 2026
+
+- Exported screenshot labels remove Unicode control and format characters,
+  including bidirectional overrides, zero-width characters, and C1 controls.
+  Each app/title field is limited to 200 characters before Markdown/HTML escaping,
+  with an ellipsis for shortened fields. Emoji joiners are also removed. Original
+  context in session files and screenshot sidecars is preserved. (#18)
+- Pressing a screenshot shortcut while paused now displays
+  "Screenshot skipped: recording paused." and captures no image. The shortcut
+  remains reserved until Stop, as before. (#18)
+- Updated the README's download and build examples and documented label formatting
+  and paused-shortcut feedback. Existing settings, sessions, and models can be reused.
+
 ## 0.5.0 — October 15, 2026
 
 - Optional screenshot context records the focused window title and executable name,

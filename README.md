@@ -8,12 +8,13 @@ voice and transcribes it on your Windows PC, ready for you to share with a teamm
 or coding agent.
 
 **[Download for Windows →](https://github.com/ariesyous/qa-tool/releases/latest)**
-Choose **QANarrator-v0.5.0-windows-x64.zip**, then follow the [quick start](#download-and-launch).
+Choose **QANarrator-v0.5.1-windows-x64.zip**, then follow the [quick start](#download-and-launch).
 Requires Windows 10/11 x64.
 
-Version **0.5.0** adds optional screenshot labels with the focused window title
-and app name. Enable them in Settings when useful; they are off by default because
-titles can contain private information. See the [release notes](CHANGELOG.md).
+Version **0.5.1** strips invisible control and format characters from screenshot
+labels, caps long labels, and explains when a screenshot shortcut is pressed while
+paused. Optional window titles and app names remain off by default because titles
+can contain private information. See the [release notes](CHANGELOG.md).
 
 [Quick start](#download-and-launch) · [First walkthrough](#your-first-walkthrough) · [Screenshot shortcuts](#screenshot-shortcuts) · [Portable Markdown](#portable-markdown-with-embedded-screenshots) · [Troubleshooting](#troubleshooting) · [Developer setup](#setup-from-source)
 
@@ -32,7 +33,7 @@ model download needs internet access; transcription runs locally afterward.
 
 ## Download and launch
 
-1. Download **QANarrator-v0.5.0-windows-x64.zip** from the
+1. Download **QANarrator-v0.5.1-windows-x64.zip** from the
    [latest release](https://github.com/ariesyous/qa-tool/releases/latest).
 2. Extract the ZIP, then double-click **`QANarrator\QANarrator.exe`**.
    Keep the entire extracted `QANarrator` folder together, including `_internal`.
@@ -59,7 +60,8 @@ correct key mapping.
    in Settings. The taskbar flashes on success without stealing focus or overlaying
    your screenshot.
 4. **Take a breather.** Use **Pause/Resume** when needed. Paused audio is discarded
-   and screenshot presses are ignored; the shortcut stays reserved until Stop.
+   and screenshot presses show "Screenshot skipped: recording paused." without
+   capturing an image; the shortcut stays reserved until Stop.
 5. **Wrap up and share.** Click **Stop Recording**. Local CPU transcription and
    export run in the background. Use **Open Markdown** or **Open Session Folder**
    to find the result. Share `feedback.md` together with its `screenshots` folder,
@@ -83,6 +85,11 @@ does not describe every window in the image. Unavailable fields are omitted.
 The preference saves immediately and affects new captures. Turning it off does
 not remove context already saved in session files or exported Markdown; review
 those labels before sharing. Existing sessions without context export as before.
+
+Exported labels escape Markdown and HTML, remove Unicode control and format
+characters (including bidirectional overrides and emoji joiners), and limit each
+app/title field to 200 characters, ending shortened fields with "…". This keeps
+headings readable; the original context remains in session files and sidecars.
 
 **Your shortcut, your choice.** The screenshot hotkey is configurable and defaults
 to **Ctrl+Alt+F9**. In **Settings → Screenshot shortcut**, record a keyboard
@@ -418,7 +425,7 @@ For a versioned release package, build into its release directory and package th
 complete application folder, documentation, and bundled dependency licenses:
 
 ```powershell
-.\scripts\build.ps1 -OutputDirectory dist/v0.4.0
+.\scripts\build.ps1 -OutputDirectory dist/v0.5.1
 uv run python scripts/package_release.py
 ```
 
