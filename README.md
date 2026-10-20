@@ -8,13 +8,14 @@ voice and transcribes it on your Windows PC, ready for you to share with a teamm
 or coding agent.
 
 **[Download for Windows →](https://github.com/ariesyous/qa-tool/releases/latest)**
-Choose **QANarrator-v0.5.1-windows-x64.zip**, then follow the [quick start](#download-and-launch).
+Choose **QANarrator-v0.5.2-windows-x64.zip**, then follow the [quick start](#download-and-launch).
 Requires Windows 10/11 x64.
 
-Version **0.5.1** strips invisible control and format characters from screenshot
-labels, caps long labels, and explains when a screenshot shortcut is pressed while
-paused. Optional window titles and app names remain off by default because titles
-can contain private information. See the [release notes](CHANGELOG.md).
+Version **0.5.2** preserves more screenshots during compact export, reports unused
+vocabulary hints, and keeps session metadata safe while locked files are retried.
+Audio errors remain visible and require explicit recovery. Optional window titles
+and app names remain off by default because titles can contain private information.
+See the [release notes](CHANGELOG.md).
 
 [Quick start](#download-and-launch) · [First walkthrough](#your-first-walkthrough) · [Screenshot shortcuts](#screenshot-shortcuts) · [Portable Markdown](#portable-markdown-with-embedded-screenshots) · [Troubleshooting](#troubleshooting) · [Developer setup](#setup-from-source)
 
@@ -33,7 +34,7 @@ model download needs internet access; transcription runs locally afterward.
 
 ## Download and launch
 
-1. Download **QANarrator-v0.5.1-windows-x64.zip** from the
+1. Download **QANarrator-v0.5.2-windows-x64.zip** from the
    [latest release](https://github.com/ariesyous/qa-tool/releases/latest).
 2. Extract the ZIP, then double-click **`QANarrator\QANarrator.exe`**.
    Keep the entire extracted `QANarrator` folder together, including `_internal`.
@@ -441,7 +442,7 @@ For a versioned release package, build into its release directory and package th
 complete application folder, documentation, and bundled dependency licenses:
 
 ```powershell
-.\scripts\build.ps1 -OutputDirectory dist/v0.5.1
+.\scripts\build.ps1 -OutputDirectory dist/v0.5.2
 uv run python scripts/package_release.py
 ```
 
