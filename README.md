@@ -336,7 +336,10 @@ use **Recover / Retry Transcription** to apply changed hints to existing audio.
 - **"Session metadata waiting to save":** another program (often antivirus or a sync
   client) is holding `session.json`. Audio and screenshots are already saved. QA Narrator
   keeps the session in memory, retries every 5 seconds, and starts transcription once it
-  saves. Keep the app open until then; closing asks before discarding unsaved metadata.
+  saves. Starting another recording is disabled until the metadata saves. If audio
+  capture also failed, the warning is retained and transcription requires an explicit
+  Recover / Retry after inspecting the saved audio. Keep the app open until the metadata
+  saves; closing asks before discarding unsaved metadata.
 - **Markdown won't open:** associate `.md` with VS Code or your preferred editor in Windows.
 
 ## Timing and capture tradeoffs

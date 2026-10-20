@@ -359,7 +359,12 @@ class MainWindow(QMainWindow):
             self.stats.setText(
                 f"{timestamp(data['duration'])}  ·  {len(self.session.screenshots())} screenshots"
             )
-            if data["status"] in ("recording", "paused", "stopping", "capture_error"):
+            if data.get("stop_error"):
+                self._notice(
+                    "warning", "Recording needs attention: " + data["stop_error"]
+                    + " Inspect saved audio before using Recover / Retry Transcription."
+                )
+            elif data["status"] in ("recording", "paused", "stopping", "capture_error"):
                 self._notice(
                     "warning",
                     "Incomplete session found. Click Recover / Retry Transcription to process saved audio.",
@@ -370,7 +375,10 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "options"):
             return
         active, idle = self.engine is not None, not self.busy and self.engine is None
-        self.start.setEnabled(idle and self.mics.count() > 0 and self._shortcuts_ready)
+        self.start.setEnabled(
+            idle and self._unsaved_session is None
+            and self.mics.count() > 0 and self._shortcuts_ready
+        )
         self.pause.setEnabled(active and not self.busy)
         self.stop.setEnabled(active and not self.busy)
         for widget in (
@@ -464,6 +472,9 @@ class MainWindow(QMainWindow):
             self.processing.setText("Cancelling… waiting for the current operation to finish.")
 
     def _start(self):
+        if self._unsaved_session is not None:
+            self._notice("warning", "Wait for session metadata to save before starting a recording.")
+            return
         # Register shortcuts before opening the microphone so a conflict stops Start cleanly.
         if not self._apply(arm=True):
             return
@@ -508,6 +519,9 @@ class MainWindow(QMainWindow):
             self._sessions(self.session)
             return
         self.session = self._unsaved_session = error.session
+        if not error.audio_ok:
+            # Keep the audio failure in the retried metadata, including after reopening.
+            error.session.data["stop_error"] = str(error)
         self.location.setText(str(error.session.folder))
         self.status.setText(
             ("Audio saved" if error.audio_ok else "Needs attention")
@@ -544,6 +558,17 @@ class MainWindow(QMainWindow):
             self._metadata_timer.start()
             return
         self._unsaved_session = None
+        audio_error = session.data.get("stop_error")
+        if audio_error:
+            if not self.engine and not self.busy:
+                self.status.setText("Needs attention · microphone is off")
+                self._sessions(session)
+            self._notice(
+                "warning", "Session metadata saved, but recording needs attention: "
+                + audio_error + " Inspect saved audio before using Recover / Retry Transcription."
+            )
+            self._controls()
+            return
         if self.engine or self.busy:
             # A new recording or another task is running; don't hijack it.
             self._notice(

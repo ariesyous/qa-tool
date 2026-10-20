@@ -606,6 +606,10 @@ def test_stop_keeps_unsaved_metadata_in_memory_and_retries(app, recorder, native
     assert window.session is complete and window._unsaved_session is complete
     assert window._metadata_timer.isActive() and not native.registered
     assert not window.retry.isEnabled()  # processing would race the pending save
+    assert not window.start.isEnabled()
+    window._start()  # Even a direct invocation must not replace the pending session.
+    assert window.engine is None and window._unsaved_session is complete
+    assert not native.registered and "Wait for session metadata" in window.message.text()
     window._retry_metadata()  # still locked: retry is scheduled again
     for _ in range(100):
         app.processEvents()
@@ -622,9 +626,11 @@ def test_stop_keeps_unsaved_metadata_in_memory_and_retries(app, recorder, native
             break
     assert stopped == [complete] and window._unsaved_session is None
     assert not window._metadata_timer.isActive()
+    window._controls()  # The _stopped test double does not refresh the controls.
+    assert window.start.isEnabled()
 
 
-def test_late_metadata_save_does_not_hijack_a_new_recording(app, recorder, monkeypatch):
+def test_late_metadata_save_does_not_hijack_another_task(app, recorder, monkeypatch):
     from qa_narrator.capture import MetadataSaveError
 
     window = recorder
@@ -637,13 +643,44 @@ def test_late_metadata_save_does_not_hijack_a_new_recording(app, recorder, monke
     monkeypatch.setattr(window, "_stopped", stopped.append)
     window._stop()
     settle(app, window)
-    window._start()  # a new recording starts before the old metadata saves
-    settle(app, window)
+    window.busy = True  # An independent task is still allowed while metadata is pending.
     window._metadata_saved(old, None)
-    assert not stopped and window._unsaved_session is None and window.engine is not None
+    assert not stopped and window._unsaved_session is None and window.busy
     assert "Recover / Retry" in window.message.text()
-    window._stop()
-    settle(app, window)
+    window.busy = False
+
+
+def test_metadata_retry_retains_audio_error_and_requires_explicit_recovery(
+    app, recorder, monkeypatch, tmp_path,
+):
+    from qa_narrator.capture import MetadataSaveError
+    from qa_narrator.storage import Session
+
+    window = recorder
+    session = Session.create(tmp_path / "audio-error", 16000, "Test")
+    session.update(status="stopped", persist=False)
+    stopped = []
+    monkeypatch.setattr(window, "_stopped", stopped.append)
+    window._stop_failed(MetadataSaveError("Audio write failed: disk full", session, audio_ok=False))
+    window._controls()
+    assert not window.start.isEnabled()
+    window._retry_metadata()
+    import time
+
+    deadline = time.monotonic() + 5
+    while window._unsaved_session is not None and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    assert window._unsaved_session is None and not stopped
+    assert "Needs attention" in window.status.text()
+    assert "disk full" in window.message.text() and "Inspect saved audio" in window.message.text()
+    assert window.start.isEnabled() and window.retry.isEnabled()
+    assert Session.load(session.folder).data["stop_error"] == "Audio write failed: disk full"
+    # Reopening must surface the audio failure rather than presenting a clean session.
+    window.sessions.addItem("Saved audio error", str(session.folder))
+    window.message.clear()
+    window._select_session()
+    assert "disk full" in window.message.text() and "Inspect saved audio" in window.message.text()
 
 
 def test_conflict_at_start_keeps_microphone_closed(app, recorder, native, monkeypatch):
