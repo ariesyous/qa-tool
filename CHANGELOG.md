@@ -1,5 +1,21 @@
 # Release notes
 
+## 0.5.2 — October 19, 2026
+
+- Compact export compresses the largest screenshots first and stops as soon as
+  the report fits. Untouched images keep their original bytes and are checked
+  for invalid or truncated image data before the compact copy is saved. (#15, #19)
+- Vocabulary hints keep whole terms within faster-whisper's token limit instead
+  of silently cutting a term. Unused hints are reported in the UI and saved in
+  the session and transcript metadata. (#16)
+- Stop retries locked session metadata and retains the complete session in memory
+  for background retries. New recordings wait until the pending metadata saves.
+  Audio errors remain visible after saving and reopening, and require explicit
+  recovery instead of automatic transcription. (#17)
+- A screenshot whose PNG and timing sidecar were saved no longer reports failure
+  when only the session index is temporarily locked. (#17)
+- Existing settings, sessions, and downloaded models can be reused.
+
 ## 0.5.1 — October 19, 2026
 
 - Exported screenshot labels remove Unicode control and format characters,

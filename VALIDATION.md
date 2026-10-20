@@ -1,5 +1,44 @@
 # Validation record
 
+## v0.5.2 release
+
+On October 19, 2026, the Windows x64 release was built after PRs #15, #16, #17,
+and #19 at `dist/v0.5.2/QANarrator/QANarrator.exe`. All **196 tests**, Ruff for
+source/tests and release scripts, the offline lockfile check, and `git diff --check`
+passed. Source, installed package metadata, and the embedded executable report
+**0.5.2**. Only the project version changed in the lockfile; dependency pins are
+unchanged. All 210 collected binary dependencies come from the project Python
+environment or Windows, without unrelated tool DLLs.
+
+Source capture passed a real Windows sharing-violation check using a synthetic PCM
+fixture and `CreateFileW` with no sharing. Stop retained the WAV, pause and stop
+events, and the complete in-memory session while metadata replacement failed.
+Releasing the handle allowed the complete metadata to save and reload. This check
+did not record a microphone. Automated Qt tests cover blocking another recording
+while metadata is pending, retries without taking over another task, and persistent
+audio warnings requiring explicit recovery after saving and reopening.
+
+Real offline CPU transcription with vocabulary hints passed with the source socket
+guard and the packaged executable. The packaged long-glossary check recorded unused
+terms consistently in session and transcript metadata. Existing local `base.en`
+files were reused; models are not bundled in the release. Packaged native GUI launch
+and normal close and exact embedded-PNG roundtrips passed.
+
+Packaged raw/compact/linked export and standalone shrinking passed. A within-budget
+3840 x 2160 PNG retained its exact bytes. A 33,228,470-byte report compressed to
+7,411,154 bytes. A mixed-image report recompressed its largest screenshot while
+retaining the smaller PNG exactly. The extracted bundled compact module rejected
+untouched invalid PNG and truncated JPEG data. Source files and manual notes were
+preserved. Results are in ignored `.validation/release-v0.5.2/exports/result.json`,
+`.validation/release-v0.5.2/regressions.json`, and `.validation/packaged-result.json`.
+
+The release ZIP includes updated documentation, screenshots, source license, and
+bundled dependency licenses. Packaging verifies the executable version, complete
+archive file list, and CRCs, and writes `SHA256SUMS.txt`. Existing README screenshots
+still match the layout. The executable remains unsigned. Physical microphone and
+keyboard acceptance, overflow/disconnect scenarios, and clean-machine deployment
+remain manual checks.
+
 ## v0.5.1 release
 
 On October 19, 2026, the Windows x64 release was built from main after PR #18 at
