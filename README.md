@@ -162,8 +162,10 @@ With this option, share **only `feedback.md`**. Choose **Embedded image quality*
 - **Compact — under 25 MB** (the UI default): targets at most **24,000,000 bytes**
   for the complete Markdown, including text and base64. If the report already fits,
   images keep their original bytes, format, and resolution. Only oversized reports
-  are compressed, starting at a maximum longest edge of 2560 pixels with JPEG
-  quality 90. PNG is retained when smaller;
+  are compressed, largest screenshots first, stopping as soon as the report fits;
+  screenshots that are not needed to meet the target stay unchanged. Compression
+  starts at a maximum longest edge of 2560 pixels with JPEG quality 90. PNG is
+  retained when smaller;
   transparent images stay PNG. If necessary, the exporter tries lower settings,
   stopping at a longest edge of 1920 pixels and JPEG quality 80. Small images are
   never enlarged. Compression can soften small text; original captures are retained.
