@@ -233,7 +233,9 @@ class MainWindow(QMainWindow):
         self.vocabulary = QLineEdit(self.settings.value("vocabulary", ""))
         self.vocabulary.setPlaceholderText("Optional: product names, UI terms, acronyms")
         self.vocabulary.setToolTip(
-            "A few hint words or phrases, separated by commas. Used for new transcription and retries."
+            "A few hint words or phrases, separated by commas. Used for new transcription and "
+            "retries. The model uses roughly the first 400–600 characters (fewer for acronyms); "
+            "terms past its limit are listed after transcription."
         )
         self.vocabulary.editingFinished.connect(self._save_vocabulary)
         form.addRow("Vocabulary hints", self.vocabulary)
@@ -567,6 +569,15 @@ class MainWindow(QMainWindow):
             self._notice("warning", "Your edited Markdown was kept. The new transcript is saved.")
         else:
             self._export_notice(path)
+        unused = self.session.data.get("transcription_vocabulary_unused") if self.session else ""
+        if unused:
+            terms = unused.split(", ") if ", " in unused else unused.split()
+            shown = ", ".join(terms[:5]) + (f", and {len(terms) - 5} more" if len(terms) > 5 else "")
+            self.processing.setText(
+                self.processing.text()
+                + f"\nVocabulary hints over the model's limit were not used: {shown} "
+                "(full list in transcription.json)"
+            )
 
     def _export_notice(self, path):
         size = path.stat().st_size

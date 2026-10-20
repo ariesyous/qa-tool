@@ -310,6 +310,13 @@ The current field is used for new transcription and retries. Leave it empty to
 disable hints. Hints guide recognition but do not guarantee a spelling or replace
 reviewing the transcript. They work locally with the existing English CPU models.
 
+Keep the list short. The model accepts at most 223 hint tokens, which is roughly
+600 characters of mixed product names and UI terms, or about 400 characters of
+acronyms. Longer lists keep the first whole terms that fit; the rest are saved as
+`transcription_vocabulary_unused` and listed after transcription. Hints also share
+each 30-second window's context with the transcript, so a shorter list leaves more
+room for recognized speech.
+
 The chosen vocabulary is saved in `session.json` and the successful
 `transcription.json`. The CLI reuses the session's saved vocabulary when omitted;
 pass `--vocabulary` to override it, or `--vocabulary=` to clear it:
