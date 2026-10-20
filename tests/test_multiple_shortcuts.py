@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest
 from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
 from qa_narrator import windows
 from qa_narrator.shortcut import AdditionalShortcutsDialog
@@ -583,6 +583,104 @@ def test_failed_start_releases_shortcuts(app, recorder, native):
     assert recorder.engine is None and not native.registered
     assert "Microphone unavailable" in recorder.message.text()
     assert recorder.start.isEnabled()
+
+
+def test_stop_keeps_unsaved_metadata_in_memory_and_retries(app, recorder, native, monkeypatch):
+    import time
+
+    from qa_narrator.capture import MetadataSaveError
+
+    window = recorder
+    # If an assertion fails mid-test, closing the window must not block on a modal.
+    monkeypatch.setattr("qa_narrator.ui.QMessageBox.question", lambda *a, **k: QMessageBox.Yes)
+    window._start()
+    settle(app, window)
+    engine = window.engine
+    complete = SimpleNamespace(folder=engine.session.folder, data={"status": "stopped"})
+    saves, stopped = [], []
+    complete.save = lambda: saves.append(1) or (_ for _ in ()).throw(PermissionError("locked"))
+    engine.stop = lambda: (_ for _ in ()).throw(MetadataSaveError("Audio saved, but…", complete))
+    monkeypatch.setattr(window, "_stopped", stopped.append)
+    window._stop()
+    settle(app, window)
+    assert window.session is complete and window._unsaved_session is complete
+    assert window._metadata_timer.isActive() and not native.registered
+    assert not window.retry.isEnabled()  # processing would race the pending save
+    assert not window.start.isEnabled()
+    window._start()  # Even a direct invocation must not replace the pending session.
+    assert window.engine is None and window._unsaved_session is complete
+    assert not native.registered and "Wait for session metadata" in window.message.text()
+    window._retry_metadata()  # still locked: retry is scheduled again
+    for _ in range(100):
+        app.processEvents()
+        time.sleep(0.01)
+        if window._metadata_timer.isActive():
+            break
+    assert saves and window._metadata_timer.isActive() and not stopped
+    complete.save = lambda: saves.append(2)
+    window._retry_metadata()
+    for _ in range(100):
+        app.processEvents()
+        time.sleep(0.01)
+        if stopped:
+            break
+    assert stopped == [complete] and window._unsaved_session is None
+    assert not window._metadata_timer.isActive()
+    window._controls()  # The _stopped test double does not refresh the controls.
+    assert window.start.isEnabled()
+
+
+def test_late_metadata_save_does_not_hijack_another_task(app, recorder, monkeypatch):
+    from qa_narrator.capture import MetadataSaveError
+
+    window = recorder
+    monkeypatch.setattr("qa_narrator.ui.QMessageBox.question", lambda *a, **k: QMessageBox.Yes)
+    window._start()
+    settle(app, window)
+    old = SimpleNamespace(folder=window.engine.session.folder, data={}, save=lambda: None)
+    window.engine.stop = lambda: (_ for _ in ()).throw(MetadataSaveError("Locked", old))
+    stopped = []
+    monkeypatch.setattr(window, "_stopped", stopped.append)
+    window._stop()
+    settle(app, window)
+    window.busy = True  # An independent task is still allowed while metadata is pending.
+    window._metadata_saved(old, None)
+    assert not stopped and window._unsaved_session is None and window.busy
+    assert "Recover / Retry" in window.message.text()
+    window.busy = False
+
+
+def test_metadata_retry_retains_audio_error_and_requires_explicit_recovery(
+    app, recorder, monkeypatch, tmp_path,
+):
+    from qa_narrator.capture import MetadataSaveError
+    from qa_narrator.storage import Session
+
+    window = recorder
+    session = Session.create(tmp_path / "audio-error", 16000, "Test")
+    session.update(status="stopped", persist=False)
+    stopped = []
+    monkeypatch.setattr(window, "_stopped", stopped.append)
+    window._stop_failed(MetadataSaveError("Audio write failed: disk full", session, audio_ok=False))
+    window._controls()
+    assert not window.start.isEnabled()
+    window._retry_metadata()
+    import time
+
+    deadline = time.monotonic() + 5
+    while window._unsaved_session is not None and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    assert window._unsaved_session is None and not stopped
+    assert "Needs attention" in window.status.text()
+    assert "disk full" in window.message.text() and "Inspect saved audio" in window.message.text()
+    assert window.start.isEnabled() and window.retry.isEnabled()
+    assert Session.load(session.folder).data["stop_error"] == "Audio write failed: disk full"
+    # Reopening must surface the audio failure rather than presenting a clean session.
+    window.sessions.addItem("Saved audio error", str(session.folder))
+    window.message.clear()
+    window._select_session()
+    assert "disk full" in window.message.text() and "Inspect saved audio" in window.message.text()
 
 
 def test_conflict_at_start_keeps_microphone_closed(app, recorder, native, monkeypatch):

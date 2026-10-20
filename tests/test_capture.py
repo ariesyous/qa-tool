@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from qa_narrator.capture import CaptureEngine
+from qa_narrator.capture import CaptureEngine, MetadataSaveError
 from qa_narrator.storage import Session
 from qa_narrator.timeline import Timeline
 
@@ -358,10 +358,95 @@ def test_stop_finalizes_wav_even_when_metadata_remains_locked(tmp_path, monkeypa
         raise PermissionError("session.json locked")
 
     monkeypatch.setattr(engine.session, "save", fail)
-    with pytest.raises(OSError, match="Audio saved, but session metadata"):
+    monkeypatch.setattr("qa_narrator.capture.STOP_METADATA_RETRY_DELAYS", (0, 0))
+    with pytest.raises(MetadataSaveError, match="Audio saved, but session metadata") as raised:
         engine.stop()
     assert (engine.session.folder / "audio.wav").exists()
     assert engine.writer_error is None and not engine.accepting
+    # The error carries the complete in-memory session, not the stale file on disk.
+    assert raised.value.session is engine.session
+    assert raised.value.session.data["status"] == "stopped"
+    assert raised.value.session.data["events"][-1]["kind"] == "stopped"
+
+
+def test_write_failure_with_locked_metadata_still_returns_the_session(tmp_path, monkeypatch):
+    engine = bare_engine(tmp_path)
+    engine.timeline = Timeline()
+    (engine.session.folder / "audio.pcm").write_bytes(b"\1\2" * 100)
+    engine.stream = SimpleNamespace(stop=lambda: None, close=lambda: None)
+    engine.screens = ThreadPoolExecutor(max_workers=1)
+    engine.writer = threading.Thread(target=lambda: None)
+    engine.writer_error = OSError("disk full")
+
+    def fail():
+        raise OSError("disk full")
+
+    monkeypatch.setattr(engine.session, "save", fail)
+    monkeypatch.setattr("qa_narrator.capture.STOP_METADATA_RETRY_DELAYS", ())
+    with pytest.raises(MetadataSaveError, match="Audio write failed.*Session metadata") as raised:
+        engine.stop()
+    assert raised.value.session is engine.session and raised.value.audio_ok is False
+
+
+def test_stop_retries_a_briefly_locked_session_file(tmp_path, monkeypatch):
+    engine = bare_engine(tmp_path)
+    engine.timeline = Timeline()
+    (engine.session.folder / "audio.pcm").write_bytes(b"\1\2" * 100)
+    engine.stream = SimpleNamespace(stop=lambda: None, close=lambda: None)
+    engine.screens = ThreadPoolExecutor(max_workers=1)
+    engine.writer = threading.Thread(target=lambda: None)
+    save, attempts, sleeps = engine.session.save, [], []
+
+    def locked_twice():
+        attempts.append(1)
+        if len(attempts) <= 2:
+            raise PermissionError("session.json locked")
+        save()
+
+    monkeypatch.setattr(engine.session, "save", locked_twice)
+    monkeypatch.setattr("qa_narrator.capture.time.sleep", sleeps.append)
+    assert engine.stop() is engine.session
+    assert len(attempts) == 3 and sleeps == [0.25, 0.5]
+    on_disk = Session.load(engine.session.folder).data
+    assert on_disk["status"] == "stopped" and on_disk["events"][-1]["kind"] == "stopped"
+
+
+def test_screenshot_is_not_reported_failed_when_only_the_index_is_locked(tmp_path, monkeypatch):
+    import sys
+
+    engine = bare_engine(tmp_path)
+    engine.timeline = Timeline()
+    engine.screen_pending = threading.BoundedSemaphore(1)
+    engine.screen_pending.acquire()
+    notices = []
+    engine.notify = lambda *args: notices.append(args)
+
+    class Screen:
+        monitors = [{"left": 0, "top": 0, "width": 8, "height": 8}] * 2
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def grab(self, rect):
+            return SimpleNamespace(size=(8, 8), rgb=b"\xff" * (8 * 8 * 3))
+
+    def fail():
+        raise PermissionError("session.json locked")
+
+    monkeypatch.setitem(sys.modules, "mss", SimpleNamespace(mss=Screen))
+    monkeypatch.setattr("qa_narrator.windows.foreground", lambda: (1, 0))
+    save = engine.session.save
+    monkeypatch.setattr(engine.session, "save", fail)
+    engine._screenshot({"hwnd": 1, "mode": "monitor", "monitor": 1}, engine.timeline.origin)
+    assert [kind for kind, _ in notices] == ["screenshot"]
+    assert (engine.session.folder / "screenshots/001.png").exists()
+    assert engine.metadata_pending.is_set() and len(engine.session.screenshots()) == 1
+    monkeypatch.setattr(engine.session, "save", save)
+    engine._persist_metadata()
+    assert len(Session.load(engine.session.folder).screenshots()) == 1
 
 
 def test_screenshot_failure_does_not_interrupt_audio(tmp_path, monkeypatch):

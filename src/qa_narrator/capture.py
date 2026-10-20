@@ -10,6 +10,18 @@ from concurrent.futures import ThreadPoolExecutor
 from .storage import Session, atomic_bytes, atomic_json
 from .timeline import Timeline
 
+# Retries for the final metadata save at Stop (off the UI thread). Antivirus scans
+# and sync clients usually release session.json within a few seconds.
+STOP_METADATA_RETRY_DELAYS = (0.25, 0.5, 1.0, 2.0)
+
+
+class MetadataSaveError(OSError):
+    """Audio is saved, but session.json could not be written; ``session`` is complete."""
+
+    def __init__(self, message, session, audio_ok=True):
+        super().__init__(message)
+        self.session, self.audio_ok = session, audio_ok
+
 
 class CaptureEngine:
     def __init__(self, root, device, microphone, notify=lambda *_: None):
@@ -323,7 +335,10 @@ class CaptureEngine:
             # Timing first, then PNG, then session index. Recovery rejoins completed pairs.
             atomic_json(self.session.folder / f"screenshots/{number:03d}.json", event)
             atomic_bytes(self.session.folder / path, payload)
-            self.session.event(event)
+            # The PNG and its timing sidecar are committed; the index is saved by the
+            # writer's metadata retries, so a locked session.json cannot fail the shot.
+            self.session.event(event, persist=False)
+            self.metadata_pending.set()
             self.notify(
                 "screenshot",
                 f"Screenshot {number:03d} saved"
@@ -376,12 +391,28 @@ class CaptureEngine:
         self.session.update(status="stopped", persist=False)
         self.metadata_pending.set()
         self._persist_metadata()
+        for delay in STOP_METADATA_RETRY_DELAYS:
+            if not self.metadata_error:
+                break
+            time.sleep(delay)
+            self.metadata_pending.set()
+            self._persist_metadata()
+        problems = []
         if self.writer_error:
-            raise OSError(f"Audio write failed; saved portion retained: {self.writer_error}")
+            problems.append(f"Audio write failed; saved portion retained: {self.writer_error}")
         if stop_error:
-            raise OSError(f"Microphone failed while stopping; saved audio retained: {stop_error}")
+            problems.append(f"Microphone failed while stopping; saved audio retained: {stop_error}")
         if self.metadata_error:
-            raise OSError(
-                f"Audio saved, but session metadata could not be saved: {self.metadata_error}"
+            # Keep the complete in-memory session: reloading session.json would lose
+            # every event that was never written (common with a full disk, too).
+            raise MetadataSaveError(
+                " ".join(problems + [
+                    ("Audio saved, but s" if not problems else "S")
+                    + f"ession metadata could not be saved: {self.metadata_error}"
+                ]),
+                self.session,
+                audio_ok=not problems,
             )
+        if problems:
+            raise OSError(" ".join(problems))
         return self.session

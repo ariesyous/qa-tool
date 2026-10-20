@@ -65,6 +65,7 @@ def test_capture_context_is_opt_in_and_survives_sidecar_recovery(
     engine.session.update(status="stopped")
     engine.timeline = Timeline()
     engine.accepting = True
+    engine.metadata_pending = threading.Event()
     engine.screen_pending = threading.BoundedSemaphore(1)
     engine.screen_pending.acquire()
     notices = []
@@ -95,6 +96,7 @@ def test_capture_context_is_opt_in_and_survives_sidecar_recovery(
     assert calls == ([42] if enabled else [])
     assert engine.screen_pending.acquire(blocking=False)
     assert len(engine.session.screenshots()) == 1, notices
+    assert [kind for kind, _ in notices] == ["screenshot"]
     event = engine.session.screenshots()[0]
     expected = context if enabled and context else None
     assert event.get("window_context") == expected
