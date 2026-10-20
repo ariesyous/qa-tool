@@ -103,6 +103,27 @@ def test_just_over_target_compresses_only_the_largest_screenshots(monkeypatch):
     assert decode_at(result, 1).format == "JPEG" and decode_at(result, 1).size == (1200, 675)
 
 
+@pytest.mark.parametrize("broken_first", [False, True])
+@pytest.mark.parametrize("payload", [b"bad", base64.b64encode(b"not an image")])
+def test_early_success_validates_untouched_images(tmp_path, monkeypatch, broken_first, payload):
+    valid = b"![large](" + data_url(noisy_image(300, 200)) + b")"
+    broken = b"![broken](data:image/png;base64," + payload + b")"
+    original = b"\n".join((broken, valid) if broken_first else (valid, broken))
+    source = tmp_path / "feedback.md"
+    source.write_bytes(original)
+    previous = tmp_path / "feedback.compact.md"
+    previous.write_bytes(b"Keep this previous export")
+    monkeypatch.setattr(compact, "COMPACT_TARGET_BYTES", len(original) - 1)
+    updates = []
+    with pytest.raises(ValueError, match="invalid embedded"):
+        shrink_markdown(source, progress=updates.append)
+    # Compression met the budget before the smaller, corrupt image was visited.
+    assert "Assembling compact Markdown…" in updates
+    assert source.read_bytes() == original
+    assert previous.read_bytes() == b"Keep this previous export"
+    assert set(tmp_path.iterdir()) == {source, previous}
+
+
 def test_unreachable_budget_keeps_previous_export_and_preferences(tmp_path, monkeypatch):
     session = make_session(tmp_path)
     original = export_markdown(session, embed_images=True, image_quality="raw").read_bytes()

@@ -144,6 +144,13 @@ def compact_markdown(
 def _assemble(content, best, target_bytes, progress, cancelled):
     progress("Assembling compact Markdown…")
     check_cancelled(cancelled)
+    # Early success can leave images that never went through _smaller_image.
+    # Validate those originals without re-encoding or changing their bytes.
+    for match, replacement in zip(DATA_IMAGE.finditer(content), best):
+        check_cancelled(cancelled)
+        if replacement == match.group(0):
+            with _embedded_image(match) as image:
+                image.verify()
     replacements = iter(best)
     result = DATA_IMAGE.sub(lambda _: next(replacements), content)
     check_cancelled(cancelled)
