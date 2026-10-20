@@ -150,7 +150,7 @@ def _assemble(content, best, target_bytes, progress, cancelled):
         check_cancelled(cancelled)
         if replacement == match.group(0):
             with _embedded_image(match) as image:
-                image.verify()
+                image.load()
     replacements = iter(best)
     result = DATA_IMAGE.sub(lambda _: next(replacements), content)
     check_cancelled(cancelled)

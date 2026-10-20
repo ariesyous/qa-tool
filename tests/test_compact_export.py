@@ -124,6 +124,26 @@ def test_early_success_validates_untouched_images(tmp_path, monkeypatch, broken_
     assert set(tmp_path.iterdir()) == {source, previous}
 
 
+def test_early_success_rejects_untouched_image_with_truncated_pixel_data(tmp_path, monkeypatch):
+    jpeg = io.BytesIO()
+    Image.new("RGB", (32, 32), "white").save(jpeg, format="JPEG")
+    # The header remains readable, but the incomplete pixel data cannot be decoded.
+    truncated = jpeg.getvalue()[:-10]
+    with pytest.raises(OSError):
+        Image.open(io.BytesIO(truncated)).load()
+    original = (
+        b"![large](" + data_url(noisy_image(300, 200))
+        + b")\n![broken](data:image/jpeg;base64," + base64.b64encode(truncated) + b")"
+    )
+    source = tmp_path / "feedback.md"
+    source.write_bytes(original)
+    monkeypatch.setattr(compact, "COMPACT_TARGET_BYTES", len(original) - 1)
+    with pytest.raises(ValueError, match="invalid embedded"):
+        shrink_markdown(source)
+    assert source.read_bytes() == original
+    assert set(tmp_path.iterdir()) == {source}
+
+
 def test_unreachable_budget_keeps_previous_export_and_preferences(tmp_path, monkeypatch):
     session = make_session(tmp_path)
     original = export_markdown(session, embed_images=True, image_quality="raw").read_bytes()
